@@ -389,6 +389,16 @@ public sealed class Session : IDisposable
                                   "-C", "Logger.Logs.MASTER=True", "-C", "Logger.Logs.POWERPC=True", "-C", "Logger.Logs.CORE=True" })
             psi.ArgumentList.Add(a);
         dolphinLogPos = -1;
+        // its own memory card (a GCI folder next to the launcher): the player's normal card often
+        // holds the game's 3 save files already and the game then stops at "not enough space" on
+        // boot. Online progress is kept by the server; this card only takes the game's own saves.
+        if (UserDir == null)
+        {
+            string card = System.IO.Path.Combine(AppContext.BaseDirectory, "memcard");
+            System.IO.Directory.CreateDirectory(card);
+            foreach (var a in new[] { "-C", "Dolphin.Core.SlotA=8", "-C", $"Dolphin.Core.GCIFolderAPathOverride={card}" })
+                psi.ArgumentList.Add(a);
+        }
         // the game window on the chosen monitor (fullscreen also goes to the monitor the window is on)
         var screen = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == cfg.Monitor);
         if (screen != null)
