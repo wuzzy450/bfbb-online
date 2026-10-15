@@ -74,7 +74,11 @@ public sealed class Session : IDisposable
         this.cfg = cfg;
         // everything we log also goes to the host (with Dolphin's own errors): one place to debug from
         this.log = s => { log(s); QueueRemoteLog(s); };
+        // sent on a timer, not from the game loop: a game that crashed or closed still gets its last
+        // lines (and Dolphin's) to the host
+        logTimer = new Timer(_ => { try { FlushRemoteLog(); } catch { } }, null, 1000, 1000);
     }
+    readonly Timer logTimer;
 
     // ---- game window on the chosen monitor ---------------------------------------------------
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumWindows(EnumWinProc cb, IntPtr l);
@@ -124,7 +128,12 @@ public sealed class Session : IDisposable
     }
 
     /// <summary>Sends queued log lines (ours and new lines of Dolphin's log) to the server.</summary>
+    readonly object flushGate = new();
     void FlushRemoteLog()
+    {
+        lock (flushGate) FlushRemoteLogLocked();
+    }
+    void FlushRemoteLogLocked()
     {
         ReadDolphinLog();
         if (conn == null || !joined) return;
@@ -459,7 +468,7 @@ public sealed class Session : IDisposable
                               : "the game is running again");
                     GameStateChanged?.Invoke(stuck ? "stuck" : "running");
                 }
-                if (stuck) { FlushRemoteLog(); Thread.Sleep(250); continue; }
+                if (stuck) { Thread.Sleep(250); continue; }
                 try
                 {
                     if (!link.Bridged) link.Hello(Mb.ModeClient, BootScene, loadWaitFrames: 600);
@@ -609,6 +618,9 @@ public sealed class Session : IDisposable
             link!.Warp(me.SceneId, reload: true);
             return;
         }
+        // buttons pressed between two sends (a quick tap: bubble bash, bounce...) are sent as held
+        // once, or teammates' games would never see them
+        if (me.Frame != lastButtonFrame) { lastButtonFrame = me.Frame; tappedButtons |= me.Buttons; }
         // our state, ~20 times a second (every 3rd game frame at 60 fps)
         if (me.Frame != lastStateFrame && (me.Frame % 3 == 0 || me.Frame - lastStateFrame >= 3) && joined)
         {
@@ -618,7 +630,8 @@ public sealed class Session : IDisposable
             st["p"] = Proto.Floats(me.X, me.Y, me.Z);
             st["y"] = Proto.Finite(MathF.Round(me.Yaw, 4));
             st["v"] = Proto.Floats(me.Vx, me.Vy, me.Vz);
-            st["b"] = me.Buttons;
+            st["b"] = me.Buttons | tappedButtons;
+            tappedButtons = 0;
             st["a"] = new JsonArray(me.Ax, me.Ay, me.Cx, me.Cy);
             st["c"] = Proto.Floats(me.Cam);
             st["ch"] = me.Character;
@@ -642,7 +655,6 @@ public sealed class Session : IDisposable
             }
         }
         PayTick(me);
-        FlushRemoteLog();
         uint released = link.DbgRender(31);
         if (released != lastReleased)
         {
@@ -664,6 +676,7 @@ public sealed class Session : IDisposable
         }
     }
 
+    uint tappedButtons, lastButtonFrame;
     uint lastReleased = uint.MaxValue, lastCutsceneSeq = uint.MaxValue, lastTalkSeq = uint.MaxValue, lastPaySeq = uint.MaxValue;
 
     // Payments (shiny doors...) made in the party, per scene: replayed in our game whenever we are
@@ -1013,6 +1026,7 @@ public sealed class Session : IDisposable
 
     public void Dispose()
     {
+        logTimer.Dispose();
         cts.Cancel();
         conn?.Close("quit");
         gameThread?.Join(500);

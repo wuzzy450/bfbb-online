@@ -285,6 +285,11 @@ static void puppet_update(int i, void* scene, f32 dt)
     load(&ctx[i], SW_ALL);
     if (mb.flags & 32u) { store(&ctx[i], SW_ALL); load(&tmp, SW_ALL); return; }   // diagnostics: swap only
 
+    // abilities (bubble bowl, cruise bubble): a puppet is built with the starting set only; the
+    // unlocks are party progress, so it has what our player has
+    AT(u8, GLOBALS + G_POWERUP) = tmp.player[G_POWERUP - G_PLAYER];
+    AT(u8, GLOBALS + G_POWERUP + 1) = tmp.player[G_POWERUP + 1 - G_PLAYER];
+
     // pad: the remote's buttons/sticks this frame; edges derived here so none are lost
     u8* pad = (u8*)MPAD;
     int noInput = (r->flags & RF_NOINPUT) != 0;

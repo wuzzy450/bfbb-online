@@ -27,6 +27,7 @@ typedef float f32;
 #define G_PLAYER         0x6E0u        // zPlayerGlobals player
 #define G_PLAYER_END     0x1FB8u       // pickupTable follows
 #define G_PLAYER_SIZE    (G_PLAYER_END - G_PLAYER)
+#define G_POWERUP        0x9BDu        // player.g.PowerUp[2]: bubble bowl, cruise bubble
 #define G_ENT_MODEL      0x704u        // player.ent.model
 #define G_ENT_UPDATE     0x714u        // player.ent.update
 #define G_ENT_RENDER     0x724u        // player.ent.render
