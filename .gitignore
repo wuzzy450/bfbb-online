@@ -1,0 +1,29 @@
+# build output
+bin/
+obj/
+patch/out/
+__pycache__/
+*.pdb
+release/BFBB-Online/
+# game files, test folders, logs (never commit game data)
+test-game/
+test-raw/
+test-sim-user/
+test-user-a/
+test-user-b/
+*.log
+selftest/
+selftest-report.md
+names/
+*.dol
+*.iso
+*.HIP
+*.HOP
+*.user
+.vs/
+
+# local notes (handoffs, test plans), kept out of the repository
+NEXT-STEPS.md
+TESTSCENARIO.md
+INVESTIGATE*.md
+*-report.md
