@@ -76,6 +76,46 @@ public sealed class Session : IDisposable
         this.log = s => { log(s); QueueRemoteLog(s); };
     }
 
+    // ---- game window on the chosen monitor ---------------------------------------------------
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumWindows(EnumWinProc cb, IntPtr l);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WinRect r);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    delegate bool EnumWinProc(IntPtr h, IntPtr l);
+    struct WinRect { public int Left, Top, Right, Bottom; }
+
+    /// <summary>
+    /// Moves Dolphin's windows onto the chosen screen once they appear (Dolphin restores its own
+    /// saved window position, so its config alone isn't enough). Keeps each window's size.
+    /// </summary>
+    static void MoveGameWindow(Process p, System.Windows.Forms.Screen screen)
+    {
+        var area = screen.WorkingArea;
+        new Thread(() =>
+        {
+            var moved = new HashSet<IntPtr>();
+            var until = DateTime.UtcNow.AddSeconds(40);
+            while (DateTime.UtcNow < until && !p.HasExited)
+            {
+                EnumWindows((h, _) =>
+                {
+                    GetWindowThreadProcessId(h, out uint pid);
+                    if (pid != (uint)p.Id || !IsWindowVisible(h) || GetWindow(h, 4) != IntPtr.Zero || moved.Contains(h)) return true;   // 4 = GW_OWNER: skip popups
+                    if (!GetWindowRect(h, out var r) || r.Right - r.Left < 200) return true;
+                    int w = Math.Min(r.Right - r.Left, area.Width), hgt = Math.Min(r.Bottom - r.Top, area.Height);
+                    int x = area.X + (area.Width - w) / 2, y = area.Y + (area.Height - hgt) / 2;
+                    if (!area.Contains(r.Left + (r.Right - r.Left) / 2, r.Top + (r.Bottom - r.Top) / 2))
+                        SetWindowPos(h, IntPtr.Zero, x, y, w, hgt, 0x0004 | 0x0010);   // NOZORDER | NOACTIVATE
+                    moved.Add(h);
+                    return true;
+                }, IntPtr.Zero);
+                Thread.Sleep(500);
+            }
+        }) { IsBackground = true, Name = "move game window" }.Start();
+    }
+
     // ---- logs for the host ----------------------------------------------------------------
     readonly Queue<string> remoteLog = new();
     void QueueRemoteLog(string s)
@@ -359,6 +399,7 @@ public sealed class Session : IDisposable
                 psi.ArgumentList.Add(a);
         }
         dolphin = Process.Start(psi) ?? throw new InvalidOperationException("could not start Dolphin");
+        if (screen != null) MoveGameWindow(dolphin, screen);
         log("started Dolphin");
         gameThread = new Thread(GameLoop) { IsBackground = true, Name = "game link" };
         gameThread.Start();
