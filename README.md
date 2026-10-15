@@ -11,6 +11,9 @@ Dolphin. The whole party shares one campaign: spatulas, socks, shinies, tasks an
 > PCs or over the internet. Bug reports welcome in
 > [Issues](https://github.com/wuzzy450/bfbb-online/issues).
 
+**Community:** join the [Discord](https://discord.gg/nuvpXycag8) · support the project on
+[Ko-fi](https://ko-fi.com/wuzzy450)
+
 ## Install (every player, 2 minutes)
 
 You need Windows 10/11 (64-bit), **Dolphin**, and **BFBB DELUXE 1.1** set up with
