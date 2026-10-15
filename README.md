@@ -124,6 +124,7 @@ This builds the in-game patch (`patch\build.py`), the launcher and the server, a
 ## Credits
 
 - **wuzzy450**: creator
+- **Mickey**: tester
 
 ## License
 

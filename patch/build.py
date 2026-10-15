@@ -60,6 +60,8 @@ GAME_SYMBOLS = {
     "rwFrameAddChild_cont": 0x8023907C,
     "rwFrameOrthoNormalize_cont": 0x802394B8,
     "CollTrigger_cont": 0x8007C560,           # zEntPlayerCollTrigger + 4
+    "ZEntEvent_cont": 0x8001F75C,
+    "zPlatform_Update_cont": 0x800AADE8,             # zEntEvent(xBase*, U32, xBase*, U32, ...) + 4
     "GiveReward_cont": 0x800F1D44,            # zNPCCommon::GiveReward + 4              # zSceneExit(S32 beginReload)        # _rwFrameSyncDirty()        # iCameraUpdatePos(RwCamera*, xMat4x3*)
     "ztaskbox_start_talk": 0x80134AC8,     # ztaskbox::start_talk(zNPCCommon*)
     "ztalkbox_start_talk_id": 0x80132A14,  # ztalkbox::start_talk(U32, callback*, zNPCCommon*)              # zEntEvent(xBase* from, xBase* to, U32 event)
@@ -108,6 +110,8 @@ BRANCHES = [
     (0x802394B4, 0x9421FFF0, "bbol_rwg_ortho"),
     (0x800F1D40, 0x9421FFD0, "bbol_givereward_stub"),  # zNPCCommon::GiveReward: stwu r1,-0x30(r1)
     (0x8007C55C, 0x9421FEE0, "bbol_colltrigger_stub"), # zEntPlayerCollTrigger: stwu r1,-0x120(r1)
+    (0x8001F758, 0x9421FFE0, "bbol_event_stub"),
+    (0x800AADE4, 0x9421FF50, "bbol_platform_update"),  # zPlatform_Update: stwu r1,-0xB0(r1)       # zEntEvent(from, fromEvent, to, ...): stwu r1,-0x20(r1)
 ]
 
 # RenderWare waits for the GPU to pass a draw-sync token with

@@ -82,6 +82,56 @@ void bbol_taskbox_complete_event(void* from, void* to, u32 event)
     if (muteTaskEvents) return;
     zEntEvent3(from, to, event);
 }
+// zEntEvent(from, fromEvent, to, toEvent, param, widget, force): the game's event dispatch.
+typedef void (*fn_event)(void* from, u32 fromEvent, void* to, u32 toEvent, const f32* param, void* widget, s32 force);
+#define ZENTEVENT_FULL ((fn_event)0x8001F758)
+#define EVT_GIVESHINY 53
+extern int inPuppet;
+static int relaying;
+
+// stubs.S bbol_event_stub: every GiveShinyObjects event before it is handled. A payment (negative
+// amount, e.g. a shiny door) is reported so teammates replay what it set off; 0 = drop the event
+// (a replay: the shared inventory already has the party's shinies).
+u32 bbol_shiny_event(u8* from, u32 fromEvent, u8* to, u32 ev, const f32* param)
+{
+    if (relaying) return 0;
+    if (from && param && param[0] < 0 && !inPuppet && mb.bridge == BBOL_BRIDGE && AT(u32, GLOBALS + G_SCENECUR)) {
+        mb.payOutId = AT(u32, from);
+        mb.payOutEvent = fromEvent;
+        mb.payOutScene = AT(u32, (u8*)AT(u32, GLOBALS + G_SCENECUR));
+        mb.payOutSeq = mb.payOutSeq + 1;
+    }
+    return 1;
+}
+
+// Sends obj's links for `event` (what the game does after obj handled it) without obj's own
+// handler running again. Shinies given/charged along the way are dropped.
+void objsync_relay_links(void* obj, u32 event)
+{
+    u8* o = obj;
+    u8* l = (u8*)AT(u32, o + 8);
+    if (!l) return;
+    relaying++;
+    for (u32 i = 0; i < o[5]; i++, l += 0x20) {
+        if (AT(u16, l) != event) continue;
+        void* dst = zSceneFindObject(AT(u32, l + 4));
+        if (!dst) continue;
+        void* w = AT(u32, l + 0x18) ? zSceneFindObject(AT(u32, l + 0x18)) : 0;
+        ZENTEVENT_FULL(o, event, dst, AT(u16, l + 2), (const f32*)(l + 8), w, 0);
+    }
+    relaying--;
+}
+
+static void apply_pays(void)
+{
+    while (mb.payInTail != mb.payInHead) {
+        u32 k = mb.payInTail % PAY_RING;
+        void* o = zSceneFindObject(mb.payIn[k][0]);
+        if (o) objsync_relay_links(o, mb.payIn[k][1]);
+        mb.payInTail = mb.payInTail + 1;
+    }
+}
+
 static u32 hashes[OBJ_MAX];
 static u32 deadHash, aliveHash;   // the 1-bit enemy states' fingerprints
 static u32 reviveUntil;
@@ -382,6 +432,7 @@ static void apply_in(void)
             // has to happen here too, once, when it goes from collectable to collected
             u32 st = AT(u32, b + PICKUP_STATE);
             int keyWasUp = is_key(b) && (AT(u16, b + 6) & 1) && (st & 0x40) && !(st & 0x3C);
+            int pickWasUp = b[4] == 0x04 && !is_key(b) && (st & 0x40) && !(st & 0x3C);
             fn_sl f = pickup_busy(b) ? 0 : resolve(loadFn, b, 0x38);
             if (f) {
                 u32* mem = scratch_begin();
@@ -398,6 +449,9 @@ static void apply_in(void)
                 mb.objApplied++;
                 st = AT(u32, b + PICKUP_STATE);
                 if (keyWasUp && (st & 0x0C)) zEntEvent(b, EVT_PICKUP);
+                // any other pickup a teammate took: what its pickup sets off here too (a chest's
+                // spatula hides the chest...), without collecting it again
+                else if (pickWasUp && (st & 0x0C)) objsync_relay_links(b, EVT_PICKUP);
             }
         }
         mb.inTail = mb.inTail + 1;
@@ -413,6 +467,7 @@ void objsync_frame(void)
     if (!raceDone) race_scan();
     if (mb.flags & 32768u) mb.inTail = mb.inHead;   // diagnostics: drop the party's states
     else apply_in();
+    apply_pays();
 
     u32 count;
     scene_base(0, &count);

@@ -61,6 +61,7 @@ public sealed class GameLink : IDisposable
     public void SetFlag(uint bit, bool on) => W(Mb.OFlags, on ? U(Mb.OFlags) | bit : U(Mb.OFlags) & ~bit);
     public uint Frames => U(Mb.OFrames);
     public uint CtxReady => U(Mb.OCtxReady);
+    public bool HighRamMapped => U(Mb.OHighRamMapped) != 0;
     public bool HighRam => U(Mb.OHighRam) != 0;
     public uint HeapGap => U(Mb.OHeapGap);
 
@@ -420,6 +421,25 @@ public sealed class GameLink : IDisposable
     }
 
     public bool EventDone => U(Mb.OEvtSeq) == U(Mb.OEvtAck);
+
+    /// <summary>mb.dbgRender[i] (diagnostics, see mailbox.h).</summary>
+    public uint DbgRender(int i) => U(Mb.ODbgRender + (uint)i * 4);
+
+    /// <summary>Bumped by the patch when something here charged shinies (a shiny door...).</summary>
+    public uint PaySeq => U(Mb.OPayOutSeq);
+    public (uint id, uint ev, uint scene) LastPay => (U(Mb.OPayOutId), U(Mb.OPayOutEvent), U(Mb.OPayOutScene));
+
+    /// <summary>Replays what a teammate's payment set off (object id, event) in the current scene.</summary>
+    public bool ReplayPay(uint id, uint ev)
+    {
+        uint head = U(Mb.OPayInHead);
+        if (head - U(Mb.OPayInTail) >= Mb.PayRing) return false;
+        uint slot = Mb.OPayIn + (uint)(head % Mb.PayRing) * 8;
+        W(slot, id);
+        W(slot + 4, ev);
+        W(Mb.OPayInHead, head + 1);
+        return true;
+    }
 
     public static uint StrHash(string s)
     {

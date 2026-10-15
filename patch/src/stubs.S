@@ -100,3 +100,45 @@ bbol_colltrigger_stub:
     bnelr
     stwu 1, -0x120(1)
     b CollTrigger_cont
+
+# zEntEvent(from, fromEvent, to, toEvent, param, widget, force) entry (was `stwu r1,-0x20(r1)`).
+# GiveShinyObjects (53) goes past bbol_shiny_event first; 0 back = drop the event.
+    .globl bbol_event_stub
+bbol_event_stub:
+    cmpwi 6, 53
+    beq 1f
+    stwu 1, -0x20(1)
+    b ZEntEvent_cont
+1:
+    stwu 1, -0x30(1)
+    mflr 0
+    stw 0, 0x34(1)
+    stw 3, 0x08(1)
+    stw 4, 0x0C(1)
+    stw 5, 0x10(1)
+    stw 6, 0x14(1)
+    stw 7, 0x18(1)
+    stw 8, 0x1C(1)
+    stw 9, 0x20(1)
+    bl bbol_shiny_event
+    mr 12, 3
+    lwz 3, 0x08(1)
+    lwz 4, 0x0C(1)
+    lwz 5, 0x10(1)
+    lwz 6, 0x14(1)
+    lwz 7, 0x18(1)
+    lwz 8, 0x1C(1)
+    lwz 9, 0x20(1)
+    lwz 0, 0x34(1)
+    mtlr 0
+    addi 1, 1, 0x30
+    cmpwi 12, 0
+    beqlr
+    stwu 1, -0x20(1)
+    b ZEntEvent_cont
+
+# zPlatform_Update as the game had it (its entry now branches to bbol_platform_update).
+    .globl zPlatform_Update_orig
+zPlatform_Update_orig:
+    stwu 1, -0xB0(1)
+    b zPlatform_Update_cont

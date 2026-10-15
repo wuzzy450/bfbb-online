@@ -83,15 +83,15 @@ static u8* promptBox;
 // A talk box that neither holds the player nor pauses the game (signs, hints): the prompt's frame.
 // Its text box must have room for our question: one too narrow for a single character per line
 // made the game's text layout run off the end of its line buffer and wreck memory (JF06).
-// The roomiest one is used.
+// The smallest one with room for the whole prompt is used (falling back to the roomiest).
 static u8* neutral_box(void)
 {
     u8* sc = (u8*)AT(u32, GLOBALS + G_SCENECUR);
     if (!sc) return 0;
     u32 n = AT(u32, sc + 0x74);
     u8** base = (u8**)AT(u32, sc + 0x78);
-    u8* best = 0;
-    f32 bestArea = 0;
+    u8* best = 0, *fit = 0;
+    f32 bestArea = 0, fitArea = 0;
     for (u32 i = 0; base && i < n; i++) {
         u8* b = base[i];
         if (!b || b[4] != BASE_TALKBOX) continue;
@@ -104,8 +104,11 @@ static u8* neutral_box(void)
         f32 w = AT(f32, ta + 0x1C), h = AT(f32, ta + 0x20), cw = AT(f32, ta + 0x28), ch = AT(f32, ta + 0x2C);
         if (!(cw > 0) || !(ch > 0) || !(w >= 16 * cw) || !(h >= 3 * ch) || !(w < 10000) || !(h < 10000)) continue;
         if (w * h > bestArea) { bestArea = w * h; best = b; }
+        // room for the prompt (<= 48 characters) with slack for word wrap
+        f32 cols = w / cw, rows = h / ch;
+        if (cols * rows >= 72 && (!fit || w * h < fitArea)) { fitArea = w * h; fit = b; }
     }
-    return best;
+    return fit ? fit : best;
 }
 
 // Starts the teammate's conversation here: the task box that talks through that talk box (its

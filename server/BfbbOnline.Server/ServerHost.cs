@@ -49,6 +49,10 @@ public sealed class Party
     readonly Dictionary<uint, Dictionary<(uint, ushort), ObjState>> objects = new();
 
     readonly HashSet<(uint, uint)> spatulas = new();
+
+    /// <summary>Payments made in each scene (shiny doors...): (object id, event), replayed by every game there.</summary>
+    public readonly Dictionary<uint, HashSet<(uint id, uint ev)>> Pays = new();
+
     /// <summary>True the first time this spatula pickup is seen collected.</summary>
     public bool FirstSpatula(uint scene, uint id) { lock (spatulas) return spatulas.Add((scene, id)); }
 
@@ -150,6 +154,8 @@ public sealed class ServerHost : IDisposable
             case "objsync": ObjSync(p, o); break;
             case "cs": Cutscene(p, o); break;
             case "talk": Talk(p, o); break;
+            case "pay": Pay(p, o); break;
+            case "plog": PlayerLog(p, o); break;
             case "inv": Inventory(p, o); break;
             case "ping":
                 var pong = Proto.Msg("pong"); pong["ts"] = o["ts"]?.DeepClone(); p.Conn.Send(pong);
@@ -289,6 +295,9 @@ public sealed class ServerHost : IDisposable
         }
         var world = party.World.ForPlayer(character, p.PersonalPlyr);
         p.Baseline = world.ToDictionary(k => k.Key, v => (byte[])v.Value.Clone());
+        List<(uint s, uint id, uint ev)> paid;
+        lock (party.Pays) paid = party.Pays.SelectMany(kv => kv.Value.Select(v => (kv.Key, v.id, v.ev))).ToList();
+        foreach (var (ps, pid, pev) in paid) p.Conn.Send(PayMsg(ps, pid, pev));
         var r = Proto.Msg("world");
         r["seq"] = o["seq"]?.DeepClone();
         r["slots"] = ToJsonSlots(world);
@@ -383,6 +392,57 @@ public sealed class ServerHost : IDisposable
         lock (gate) members = party.Members.Where(m => m != p).ToList();
         foreach (var m in members) m.Conn.Send(m.Scene == scene ? cs : note);
         Log($"{p.Name} started cutscene {o["id"]} in {PlayerState.SceneName(scene)}");
+    }
+
+    /// <summary>
+    /// Someone paid (a shiny door...): every teammate's game replays what the payment set off, now
+    /// and whenever they enter that scene. The shinies themselves move through the shared inventory.
+    /// </summary>
+    void Pay(Player p, JsonObject o)
+    {
+        var party = p.Party;
+        if (party == null || o["id"]?.GetValue<uint>() is not uint id || o["ev"]?.GetValue<uint>() is not uint ev) return;
+        uint scene = PlayerState.SceneIdOf(o["s"]?.GetValue<string>() ?? "");
+        if (scene == 0) return;
+        lock (party.Pays)
+        {
+            if (!party.Pays.TryGetValue(scene, out var set)) party.Pays[scene] = set = new();
+            set.Add((id, ev));
+        }
+        var m = PayMsg(scene, id, ev).ToJsonString();
+        List<Player> to;
+        lock (gate) to = party.Members.Where(x => x != p).ToList();
+        foreach (var x in to) x.Conn.Send(m);
+        Log($"{p.Name} paid at {id:X8} in {PlayerState.SceneName(scene)}");
+    }
+
+    /// <summary>
+    /// A player's launcher log and Dolphin errors: kept in DataDir/../player-logs/&lt;name&gt;.log; Dolphin's
+    /// lines (crash popups...) are also shown in the host's log.
+    /// </summary>
+    void PlayerLog(Player p, JsonObject o)
+    {
+        if (o["l"] is not JsonArray lines) return;
+        var dir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(opt.DataDir)) ?? ".", "player-logs");
+        string safe = string.Concat((p.Name ?? "player").Select(ch => char.IsLetterOrDigit(ch) || ch == '-' || ch == '_' ? ch : '_'));
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.AppendAllLines(Path.Combine(dir, safe + ".log"),
+                lines.Select(l => $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {l?.GetValue<string>()}"));
+        }
+        catch { }
+        foreach (var l in lines)
+            if (l?.GetValue<string>() is string s && s.StartsWith("[dolphin]")
+                && (s.Contains("Invalid", StringComparison.OrdinalIgnoreCase) || s.Contains("error", StringComparison.OrdinalIgnoreCase) || s.Contains("PC =")))
+                Log($"{p.Name}'s game: {s[10..]}");
+    }
+
+    static JsonObject PayMsg(uint scene, uint id, uint ev)
+    {
+        var m = Proto.Msg("pay");
+        m["s"] = PlayerState.SceneName(scene); m["id"] = id; m["ev"] = ev;
+        return m;
     }
 
     /// <summary>A conversation started: teammates in that scene are offered to watch along.</summary>

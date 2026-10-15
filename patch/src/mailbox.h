@@ -13,6 +13,7 @@
 #define EXTRA_OSHEAP_LO 0x81A00000u // with the RAM override: 0x81800000.. puppets, this.. the OS heap
 #define EXTRA_OSHEAP_HI 0x82000000u  // the OS maps 32 MB (BAT), more MEM1 isn't reachable
 #define HEAP_RESERVE_DEFAULT 0x6000u  // free heap kept after building puppets (24 KB)
+#define PUPPET_COST_GUESS 0x10000u    // scene heap one puppet needs, before one was measured (64 KB)
 
 #define MODE_OFFLINE    0u
 #define MODE_CLIENT     1u
@@ -69,6 +70,7 @@ typedef struct {
 #define OBJ_DATA        240          // bytes of save data per record (1920 bits)
 
 #define NPC_MAX 128
+#define PAY_RING 16
 typedef struct {
     u16 index;           // 0x00 index in zScene::base
     u16 flags;           // 0x02 1 valid, 2 boss, 4 hp/round valid; high byte: sender's party id
@@ -191,6 +193,15 @@ typedef struct {
     u32 npcRemoteRank[MAX_REMOTE]; // 0x465C bridge: party id of the player in each puppet slot
     NpcPose npcOut[NPC_MAX];     // 0x4670 the NPCs our game drives (nearest to our player)
     NpcPose npcIn[NPC_MAX];
+    // paid gates (shiny doors...): what a payment set off (the paying object's links) is replayed
+    // in teammates' games, without paying again
+    u32 payOutSeq;               // 0x8670 patch bumps after a payment here
+    u32 payOutId;                // 0x8674 the object whose links charged the shinies
+    u32 payOutEvent;             // 0x8678 the event it was handling
+    u32 payOutScene;             // 0x867C
+    u32 payInHead;               // 0x8680 bridge bumps after filling payIn[head % PAY_RING]
+    u32 payInTail;               // 0x8684 patch
+    u32 payIn[PAY_RING][2];      // 0x8688 (object id, event) to replay in the current scene
 } Mailbox;
 
 extern volatile Mailbox mb;
@@ -201,6 +212,7 @@ void cutscene_frame(void);
 void talk_frame(void);
 u32 objsync_hashes(void);
 void npcsync_frame(void);
+void objsync_relay_links(void* obj, u32 event);
 
 // Layout is mirrored in shared/Mailbox.cs; these catch accidental drift.
 #define BBOL_OFF(f) __builtin_offsetof(Mailbox, f)
@@ -220,6 +232,8 @@ _Static_assert(BBOL_OFF(invSetMask) == 0x4634, "invSetMask");
 _Static_assert(sizeof(NpcPose) == 0x40, "NpcPose");
 _Static_assert(BBOL_OFF(npcRank) == 0x463C, "npcRank");
 _Static_assert(BBOL_OFF(npcOut) == 0x4670, "npcOut");
+_Static_assert(BBOL_OFF(payOutSeq) == 0x8670, "payOutSeq");
+_Static_assert(BBOL_OFF(payIn) == 0x8688, "payIn");
 _Static_assert(BBOL_OFF(outHead) == 0x380, "outHead");
 _Static_assert(BBOL_OFF(out) == 0x3C0, "out");
 _Static_assert(BBOL_OFF(in) == 0x3C0 + OBJ_RING * 0x100, "in");

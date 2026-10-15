@@ -57,11 +57,66 @@ public sealed class Session : IDisposable
     public GameLink? Link => link;
     public int DolphinPid => dolphin?.Id ?? 0;
     public bool GameRunning => dolphin is { HasExited: false };
+    /// <summary>The game stopped advancing (a Dolphin error popup, a hang) while Dolphin stays open.</summary>
+    public bool GameStuck { get; private set; }
+    /// <summary>"running", "stuck" or "closed".</summary>
+    public event Action<string>? GameStateChanged;
+
+    /// <summary>Closes a stuck game (waits up to 5 s).</summary>
+    public void KillGame()
+    {
+        try { if (dolphin is { HasExited: false } d) { d.Kill(); d.WaitForExit(5000); } } catch { }
+        gameThread?.Join(3000);   // its "closed" must come before the new game's "running"
+    }
 
     public Session(Config cfg, Action<string> log)
     {
         this.cfg = cfg;
-        this.log = log;
+        // everything we log also goes to the host (with Dolphin's own errors): one place to debug from
+        this.log = s => { log(s); QueueRemoteLog(s); };
+    }
+
+    // ---- logs for the host ----------------------------------------------------------------
+    readonly Queue<string> remoteLog = new();
+    void QueueRemoteLog(string s)
+    {
+        lock (remoteLog) { if (remoteLog.Count < 500) remoteLog.Enqueue(s); }
+    }
+
+    /// <summary>Sends queued log lines (ours and new lines of Dolphin's log) to the server.</summary>
+    void FlushRemoteLog()
+    {
+        ReadDolphinLog();
+        if (conn == null || !joined) return;
+        var lines = new System.Text.Json.Nodes.JsonArray();
+        lock (remoteLog) while (remoteLog.Count > 0 && lines.Count < 40) lines.Add(remoteLog.Dequeue());
+        if (lines.Count == 0) return;
+        var m = Proto.Msg("plog"); m["l"] = lines;
+        Send(m);
+    }
+
+    string DolphinLogPath => System.IO.Path.Combine(UserDir ?? System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Dolphin Emulator"), "Logs", "dolphin.log");
+    long dolphinLogPos = -1;
+    DateTime nextLogRead;
+    void ReadDolphinLog()
+    {
+        if (DateTime.UtcNow < nextLogRead) return;
+        nextLogRead = DateTime.UtcNow.AddSeconds(1);
+        try
+        {
+            using var f = new System.IO.FileStream(DolphinLogPath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete);
+            if (dolphinLogPos < 0 || dolphinLogPos > f.Length) dolphinLogPos = f.Length;   // only what's new from now on
+            if (f.Length == dolphinLogPos) return;
+            f.Position = dolphinLogPos;
+            using var r = new System.IO.StreamReader(f);
+            string? line;
+            int n = 0;
+            while ((line = r.ReadLine()) != null && n++ < 200)
+                if (line.Length > 0) lock (remoteLog) { if (remoteLog.Count < 500) remoteLog.Enqueue("[dolphin] " + line); }
+            dolphinLogPos = f.Length;
+        }
+        catch { }
     }
 
     void SetStatus(string s) { Status = s; StatusChanged?.Invoke(s); }
@@ -169,7 +224,7 @@ public sealed class Session : IDisposable
                 break;
             case "cs":
                 // a teammate in our scene started a story cutscene: watch it with them
-                if (o["id"]?.GetValue<uint>() is uint csid && link != null
+                if (cfg.WatchAlong && o["id"]?.GetValue<uint>() is uint csid && link != null
                     && link.TryReadLocal(out var meCs) && PlayerState.SceneName(meCs.SceneId) == o["s"]?.GetValue<string>())
                 {
                     log($"{o["name"]} started a cutscene, watching along");
@@ -194,6 +249,16 @@ public sealed class Session : IDisposable
                         npcInDirty = true;
                     }
                 }
+                break;
+            case "pay":
+                // a teammate paid (a shiny door...): replay what that set off, now or when we get there
+                if (o["s"]?.GetValue<string>() is string pscene && o["id"]?.GetValue<uint>() is uint pid
+                    && o["ev"]?.GetValue<uint>() is uint pev)
+                    lock (pays)
+                    {
+                        if (!pays.TryGetValue(pscene, out var set)) pays[pscene] = set = new();
+                        set.Add((pid, pev));
+                    }
                 break;
             case "spat":
                 // the party's spatula count (the server counts each spatula once)
@@ -223,12 +288,12 @@ public sealed class Session : IDisposable
                 break;
             case "talk":
                 // a teammate in our scene started a conversation: offer to watch along
-                if (o["id"]?.GetValue<uint>() is uint tid && link != null
+                if (cfg.WatchAlong && o["id"]?.GetValue<uint>() is uint tid && link != null
                     && link.TryReadLocal(out var meT) && PlayerState.SceneName(meT.SceneId) == o["s"]?.GetValue<string>())
                 {
                     string who = o["name"]?.GetValue<string>() ?? "A teammate";
                     log($"{who} is talking to someone: watch along? (D-pad Up yes, Down no)");
-                    link.OfferTalk(tid, $"{who} is talking. Watch along? Up: yes  Down: no");
+                    link.OfferTalk(tid, $"{(who.Length > 12 ? who[..12] : who)}: watch along? Up yes, Down no");
                 }
                 break;
         }
@@ -279,6 +344,20 @@ public sealed class Session : IDisposable
         if (SaveState != null) { psi.ArgumentList.Add("-s"); psi.ArgumentList.Add(SaveState); }
         foreach (var a in new[] { "-b", "-e", Installer.GameDol, "-C", "Dolphin.Interface.SkipNKitWarning=True" }.Concat(DolphinMemory.LaunchArgs))
             psi.ArgumentList.Add(a);
+        // Dolphin's log file with warnings and errors (crash popups are logged too): sent to the host
+        foreach (var a in new[] { "-C", "Logger.Options.WriteToFile=True", "-C", "Logger.Options.Verbosity=3",
+                                  "-C", "Logger.Logs.MASTER=True", "-C", "Logger.Logs.POWERPC=True", "-C", "Logger.Logs.CORE=True" })
+            psi.ArgumentList.Add(a);
+        dolphinLogPos = -1;
+        // the game window on the chosen monitor (fullscreen also goes to the monitor the window is on)
+        var screen = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == cfg.Monitor);
+        if (screen != null)
+        {
+            var b = screen.WorkingArea;
+            foreach (var a in new[] { "-C", $"Dolphin.Display.RenderWindowXPos={b.X + 40}", "-C", $"Dolphin.Display.RenderWindowYPos={b.Y + 40}",
+                                      "-C", "Dolphin.Interface.RenderToMain=False" })
+                psi.ArgumentList.Add(a);
+        }
         dolphin = Process.Start(psi) ?? throw new InvalidOperationException("could not start Dolphin");
         log("started Dolphin");
         gameThread = new Thread(GameLoop) { IsBackground = true, Name = "game link" };
@@ -293,9 +372,43 @@ public sealed class Session : IDisposable
             if (link == null) { log("couldn't find the patched game in Dolphin's memory"); return; }
             link.Hello(Mb.ModeClient, BootScene, loadWaitFrames: 600);
             log("linked to the game");
+            _ = Task.Run(() =>
+            {
+                // the extra RAM is mapped at boot: report it once the first scene has puppets
+                for (int k = 0; k < 120 && link != null; k++)
+                {
+                    Thread.Sleep(500);
+                    try
+                    {
+                        if (link == null || link.CtxReady == 0) continue;
+                        log(link.HighRamMapped ? "memory: extra RAM in use (teammates fit in every level)"
+                            : "memory: Dolphin didn't give the game extra RAM: big levels can only show a few teammates");
+                        return;
+                    }
+                    catch { }
+                }
+            });
             int errors = 0;
+            uint lastFrames = 0;
+            var lastAdvance = DateTime.UtcNow;
+            GameStuck = false;
+            GameStateChanged?.Invoke("running");
             while (!cts.IsCancellationRequested && !dolphin.HasExited)
             {
+                // frames stop for 20 s with Dolphin still open: crashed (error popup) or frozen
+                uint fr = 0;
+                bool loading = false;
+                try { fr = link.Frames; loading = link.LoadPending; } catch { }
+                if (fr != lastFrames || loading) { lastFrames = fr; lastAdvance = DateTime.UtcNow; }
+                bool stuck = fr != 0 && DateTime.UtcNow - lastAdvance > TimeSpan.FromSeconds(20);
+                if (stuck != GameStuck)
+                {
+                    GameStuck = stuck;
+                    log(stuck ? "the game stopped responding (crashed, frozen or paused). Click Restart game to start it again"
+                              : "the game is running again");
+                    GameStateChanged?.Invoke(stuck ? "stuck" : "running");
+                }
+                if (stuck) { FlushRemoteLog(); Thread.Sleep(250); continue; }
                 try
                 {
                     if (!link.Bridged) link.Hello(Mb.ModeClient, BootScene, loadWaitFrames: 600);
@@ -320,7 +433,9 @@ public sealed class Session : IDisposable
         {
             link?.Dispose();
             link = null;
+            GameStuck = false;
             if (!cts.IsCancellationRequested) log("game closed");
+            GameStateChanged?.Invoke("closed");
         }
     }
 
@@ -475,6 +590,15 @@ public sealed class Session : IDisposable
                 Send(m);
             }
         }
+        PayTick(me);
+        FlushRemoteLog();
+        uint released = link.DbgRender(31);
+        if (released != lastReleased)
+        {
+            if (lastReleased != uint.MaxValue)
+                log($"your character was frozen for 15 s with nothing going on: gave control back (held by 0x{link.DbgRender(30):X})");
+            lastReleased = released;
+        }
         uint ts = link.TalkSeq;
         if (ts != lastTalkSeq)
         {
@@ -489,7 +613,45 @@ public sealed class Session : IDisposable
         }
     }
 
-    uint lastCutsceneSeq = uint.MaxValue, lastTalkSeq = uint.MaxValue;
+    uint lastReleased = uint.MaxValue, lastCutsceneSeq = uint.MaxValue, lastTalkSeq = uint.MaxValue, lastPaySeq = uint.MaxValue;
+
+    // Payments (shiny doors...) made in the party, per scene: replayed in our game whenever we are
+    // in that scene (the game closes those doors again on every load and scene reset).
+    readonly Dictionary<string, HashSet<(uint id, uint ev)>> pays = new();
+    readonly HashSet<(uint, uint)> paysApplied = new();
+    (uint scene, uint reset) payVisit;
+    DateTime payVisitStart;
+
+    void PayTick(in PlayerState me)
+    {
+        uint ps = link!.PaySeq;
+        if (ps != lastPaySeq)
+        {
+            bool first = lastPaySeq == uint.MaxValue;
+            lastPaySeq = ps;
+            var (id, ev, sc) = link.LastPay;
+            if (!first && joined)
+            {
+                var m = Proto.Msg("pay"); m["s"] = PlayerState.SceneName(sc); m["id"] = id; m["ev"] = ev;
+                Send(m);
+                lock (pays) paysApplied.Add((id, ev));   // done in our game already
+            }
+        }
+        var visit = (me.SceneId, link.ResetSeq);
+        if (visit != payVisit) { payVisit = visit; payVisitStart = DateTime.UtcNow; lock (pays) paysApplied.Clear(); }
+        // after the scene settled (the party's object states are in)
+        if (!joined || link.LoadPending || DateTime.UtcNow - payVisitStart < TimeSpan.FromSeconds(1.5)) return;
+        lock (pays)
+        {
+            if (!pays.TryGetValue(PlayerState.SceneName(me.SceneId), out var set)) return;
+            foreach (var k in set)
+                if (!paysApplied.Contains(k) && link.ReplayPay(k.id, k.ev))
+                {
+                    paysApplied.Add(k);
+                    log("a teammate's payment opened something here");
+                }
+        }
+    }
     uint[]? lastCounters;
     readonly List<(int i, int d)> invIn = new();
 
@@ -785,7 +947,11 @@ public sealed class Session : IDisposable
                 if (p.Written != p.Seq)
                 {
                     p.Written = p.Seq;
-                    link!.SetRemote(p.Slot, p.State, p.State.ControlOff != 0 ? Mb.RfNoInput : 0, ParseColor(p.Color), p.Name);
+                    // their controls are off (a cutscene, a conversation): their sticks mustn't walk the puppet.
+                    // A control-off bit left over while they clearly run around doesn't count (the puppet
+                    // would only glide to their position without walking or turning).
+                    bool moving = p.State.Vx * p.State.Vx + p.State.Vz * p.State.Vz > 0.5f;
+                    link!.SetRemote(p.Slot, p.State, p.State.ControlOff != 0 && !moving ? Mb.RfNoInput : 0, ParseColor(p.Color), p.Name);
                 }
             }
         }

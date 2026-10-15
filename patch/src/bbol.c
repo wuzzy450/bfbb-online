@@ -43,6 +43,7 @@ typedef struct {
     u32 seqFrame;   // mb.frames when lastSeq arrived
     u32 prevOn;
     u32 placed;     // has been snapped to the remote once
+    u32 tilted;     // frames the puppet has been tipped over (a death or reset gone wrong)
 } CtxInfo;
 
 static Ctx ctx[MAX_REMOTE];
@@ -345,6 +346,18 @@ static void puppet_update(int i, void* scene, f32 dt)
     }
     if (cheap) face(fr, mdl, r->yaw);
 
+    // the player never tips over in this game: a puppet tilted or upside down for a second is
+    // stuck (a death sequence that never finished here): reset it, the next frame puts it back
+    // upright where the teammate is
+    if (fr && AT(f32, fr + 0x14) < 0.5f) {
+        if (++in->tilted > 60) {
+            zEntPlayerReset((void*)(GLOBALS + G_PLAYER));
+            AT(u8, GLOBALS + G_PLAYER + 0x18) |= 1;
+            in->placed = 0;
+            in->tilted = 0;
+        }
+    } else in->tilted = 0;
+
     store(&ctx[i], SW_ALL);
     load(&tmp, SW_ALL);
 }
@@ -436,9 +449,15 @@ void bbol_setup_player(void)
     int high = mb.highRamMapped != 0;
     u32 saved[4], savedLast = AT(u32, h0 + 0xD8);
     memcpy(saved, sp, 16);
-    if (high) AT(u32, sp) = EXTRA_RAM;
+    // xHeapState {curr, blk_ct, used, wasted}: xMemAlloc refuses (NULL) once used + size passes the
+    // heap's size, and the puppets don't use the scene's block: count from 0 while building them
+    // (both restored after). Big scenes (the slide) left too little and player setup crashed.
+    if (high) { AT(u32, sp) = EXTRA_RAM; AT(u32, sp + 8) = 0; }
     u32 reserve = mb.heapReserve ? mb.heapReserve : HEAP_RESERVE_DEFAULT;
-    u32 cost = 0;
+    // until the first one is measured, assume a puppet costs PUPPET_COST_GUESS: the first build
+    // must not run a tight scene (JF02) out of memory (NULL allocations crashed xEntInitForType)
+    u32 cost = PUPPET_COST_GUESS;
+    int measured = 0;
     int nctx = (mb.flags & 512u) ? 1 : MAX_REMOTE;   // 512: diagnostics, one context
     mb.heapFree[0] = heap_gap();
     for (int i = 0; i < nctx; i++) {
@@ -452,7 +471,7 @@ void bbol_setup_player(void)
         mb.ctxReady = i + 1;
         u32 after = high ? AT(u32, sp) - EXTRA_RAM : heap_gap();
         mb.heapFree[i + 1] = after;
-        if (!high && gap - after > cost) cost = gap - after;
+        if (!high && (!measured || gap - after > cost)) { cost = gap - after; measured = 1; }
     }
     if (high) { memcpy(sp, saved, 16); AT(u32, h0 + 0xD8) = savedLast; }
     mb.highRam = high;
@@ -588,6 +607,9 @@ void bbol_player_render(void* ent)
         }
         store(&tmp, SW_PLAYER | SW_STATICS);
         load(&ctx[i], SW_PLAYER | SW_STATICS);
+        // a death (the exploding one) or a scene reset can leave the puppet's entity hidden
+        // (xEntHide): a teammate is always drawn unless their own game hides them (RF_HIDDEN)
+        AT(u8, GLOBALS + G_PLAYER + 0x18) |= 1;
         rf((void*)(GLOBALS + G_PLAYER));
         load(&tmp, SW_PLAYER | SW_STATICS);
         rwFrameSyncDirty();   // see bbol_player_update
@@ -624,6 +646,60 @@ void bbol_player_reset(void* ent)
     }
 }
 
+// Control taken away with nothing on screen to give it back (seen after a bungee spatula, with
+// teammates' puppets in the scene): after 15 s with no cinematic or conversation running, give
+// it back. mb.dbgRender[30] = the owners that were released, [31] = how many times.
+static u32 heldFrames;
+static void control_watchdog(void)
+{
+    u32 off = AT(u32, GLOBALS + G_CONTROLOFF);
+    if (!off || AT(u32, GLOBALS + G_CMGR) || AT(u32, TALK_SHARED + 8) || mb.mode == MODE_SIM) { heldFrames = 0; return; }
+    if (++heldFrames < 15 * 60) return;
+    heldFrames = 0;
+    mb.dbgRender[30] = off;
+    mb.dbgRender[31]++;
+    zEntPlayerControlOn(off);
+}
+
+// zPlatform_Update entry. A teeter-totter only tilts under globals.player.drv (our own player);
+// one a teammate's puppet stands on (and we don't) is updated with that puppet's drive state.
+#define G_DRV          0x1BE8u    // player.drv (xEntDrive)
+#define DRV_OS         0x0Cu
+#define DRV_S          0x18u
+#define DRV_ODRIVER    0x1Cu
+#define DRV_DRIVER     0x20u
+#define PLAT_TEETER    11
+void zPlatform_Update_orig(void* plat, void* sc, f32 dt);
+void bbol_platform_update(u8* plat, void* sc, f32 dt)
+{
+    u8* drv = (u8*)(GLOBALS + G_DRV);
+    if (!bridged() || plat[0x1A] != PLAT_TEETER || inPuppet
+        || AT(u32, drv + DRV_DRIVER) == (u32)plat || AT(u32, drv + DRV_ODRIVER) == (u32)plat) {
+        zPlatform_Update_orig(plat, sc, dt);
+        return;
+    }
+    for (int i = 0; i < MAX_REMOTE; i++) {
+        if (!info[i].valid || !info[i].placed || !mb.remote[i].active) continue;
+        u8* pd = ctx[i].player + (G_DRV - G_PLAYER);
+        if (AT(u32, pd + DRV_DRIVER) != (u32)plat && AT(u32, pd + DRV_ODRIVER) != (u32)plat) continue;
+        u32 keep[5] = { AT(u32, drv + DRV_OS), AT(u32, drv + DRV_S), AT(u32, drv + DRV_ODRIVER),
+                        AT(u32, drv + DRV_DRIVER), AT(u32, GLOBALS + G_ENT_FRAME) };
+        AT(u32, drv + DRV_OS) = AT(u32, pd + DRV_OS);
+        AT(u32, drv + DRV_S) = AT(u32, pd + DRV_S);
+        AT(u32, drv + DRV_ODRIVER) = AT(u32, pd + DRV_ODRIVER);
+        AT(u32, drv + DRV_DRIVER) = AT(u32, pd + DRV_DRIVER);
+        AT(u32, GLOBALS + G_ENT_FRAME) = AT(u32, ctx[i].player + (G_ENT_FRAME - G_PLAYER));
+        zPlatform_Update_orig(plat, sc, dt);
+        AT(u32, drv + DRV_OS) = keep[0];
+        AT(u32, drv + DRV_S) = keep[1];
+        AT(u32, drv + DRV_ODRIVER) = keep[2];
+        AT(u32, drv + DRV_DRIVER) = keep[3];
+        AT(u32, GLOBALS + G_ENT_FRAME) = keep[4];
+        return;
+    }
+    zPlatform_Update_orig(plat, sc, dt);
+}
+
 // zGameLoop / zMenuLoop: bl xPadUpdate
 s32 bbol_pad_update(s32 idx, f32 dt)
 {
@@ -648,7 +724,7 @@ s32 bbol_pad_update(s32 idx, f32 dt)
         AT(s8, pad + PAD_ANALOG2 + 1) = mb.pcy;
     }
     // runs every game frame, also while gameplay is frozen for a cutscene (after the pad is final)
-    if (bridged() && idx == AT(u8, GLOBALS + 0x6D1) && AT(u32, GLOBALS + G_SCENECUR) && !(mb.flags & (1024u | 16384u))) { cutscene_frame(); talk_frame(); }
+    if (bridged() && idx == AT(u8, GLOBALS + 0x6D1) && AT(u32, GLOBALS + G_SCENECUR) && !(mb.flags & (1024u | 16384u))) { cutscene_frame(); talk_frame(); control_watchdog(); }
     return r;
 }
 

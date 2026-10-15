@@ -25,6 +25,8 @@ public sealed class MainForm : Form
     readonly NumericUpDown port = new() { Minimum = 1, Maximum = 65535, Width = 80 };
     readonly TextBox party = new() { Width = 180 };
     readonly CheckBox host = new() { Text = "Host the server on this PC", AutoSize = true };
+    readonly ComboBox monitor = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+    readonly CheckBox watchAlong = new() { Text = "Cutscene sync: watch teammates' cutscenes and conversations with them", AutoSize = true, MaximumSize = new Size(360, 0) };
     readonly CheckBox hostUpnp = new() { Text = "Open the port on my router (UPnP, for internet play)", AutoSize = true };
     readonly CheckBox hostSims = new() { Text = "Simulate maps on this PC (server-side)", AutoSize = true };
     readonly NumericUpDown maxSims = new() { Minimum = 1, Maximum = 16, Width = 50 };
@@ -44,7 +46,7 @@ public sealed class MainForm : Form
         k = DeviceDpi / 96f;
         foreach (var c in new Control[] { name, color, serverAddr, port, party, maxSims, play })
             c.Size = new Size(Px(c.Width), Px(c.Height));
-        hostInfo.MaximumSize = gameInfo.MaximumSize = new Size(Px(360), 0);
+        hostInfo.MaximumSize = gameInfo.MaximumSize = watchAlong.MaximumSize = new Size(Px(360), 0);
         ClientSize = new Size(Px(900), Px(600));
         MinimumSize = new Size(Px(820), Px(560));
         StartPosition = FormStartPosition.CenterScreen;
@@ -56,6 +58,9 @@ public sealed class MainForm : Form
         left.Controls.Add(Row("Port", port));
         left.Controls.Add(Row("Party", party));
         left.Controls.Add(new Label { Text = "Players in the same party share one campaign.", AutoSize = true, MaximumSize = new Size(Px(360), 0), ForeColor = Color.DimGray, Margin = new Padding(3, 0, 3, 10) });
+        left.Controls.Add(Row("Game screen", monitor));
+        left.Controls.Add(watchAlong);
+        left.Controls.Add(new Label { Height = 6 });
         left.Controls.Add(host);
         hostUpnp.Margin = new Padding(18, 0, 0, 0);
         left.Controls.Add(hostUpnp);
@@ -107,6 +112,26 @@ public sealed class MainForm : Form
         host.Checked = cfg.Host;
         hostSims.Checked = cfg.HostSims;
         hostUpnp.Checked = cfg.HostUpnp;
+        watchAlong.Checked = cfg.WatchAlong;
+        // which monitor the game opens on
+        monitor.Items.Add("Automatic");
+        var screens = Screen.AllScreens;
+        for (int i = 0; i < screens.Length; i++)
+            monitor.Items.Add($"Monitor {i + 1}{(screens[i].Primary ? " (main)" : "")}  {screens[i].Bounds.Width}x{screens[i].Bounds.Height}");
+        int sel = Array.FindIndex(screens, s => s.DeviceName == cfg.Monitor);
+        monitor.SelectedIndex = sel + 1;
+        monitor.SelectedIndexChanged += (_, _) =>
+        {
+            cfg.Monitor = monitor.SelectedIndex > 0 ? screens[monitor.SelectedIndex - 1].DeviceName : "";
+            try { cfg.Save(); } catch { }
+        };
+        // takes effect right away, also while playing
+        watchAlong.CheckedChanged += (_, _) =>
+        {
+            cfg.WatchAlong = watchAlong.Checked;
+            try { cfg.Save(); } catch { }
+            Log(watchAlong.Checked ? "cutscene sync on" : "cutscene sync off: teammates' cutscenes and conversations won't interrupt you");
+        };
         maxSims.Value = Math.Clamp(cfg.HostMaxSims, 1, 16);
 
         color.Click += (_, _) =>
@@ -221,6 +246,7 @@ public sealed class MainForm : Form
         cfg.Host = host.Checked;
         cfg.HostSims = hostSims.Checked;
         cfg.HostUpnp = hostUpnp.Checked;
+        cfg.WatchAlong = watchAlong.Checked;
         cfg.HostMaxSims = (int)maxSims.Value;
         cfg.Save();
 
@@ -282,6 +308,12 @@ public sealed class MainForm : Form
             }
             session = new Session(cfg, Log);
             session.StatusChanged += s => Ui(() => status.Text = s);
+            session.GameStateChanged += st => Ui(() => play.Text = st switch
+            {
+                "running" => "Game running",
+                "stuck" => "Game crashed - Restart game",
+                _ => "Play",
+            });
             session.MembersChanged += list => Ui(() =>
             {
                 members.Items.Clear();
@@ -296,6 +328,7 @@ public sealed class MainForm : Form
             session.Connect(target, cfg.Port);
             foreach (var c in new Control[] { name, serverAddr, port, party, host, hostSims, hostUpnp, maxSims }) c.Enabled = false;
         }
+        if (session.GameStuck) { Log("closing the crashed game..."); session.KillGame(); }
         if (!session.GameRunning) session.LaunchGame(dolphin);
         play.Text = "Game running";
     }

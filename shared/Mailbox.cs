@@ -37,6 +37,10 @@ public static class Mb
         ONpcInSeq = 0x464C, ONpcInCount = 0x4650, ONpcInScene = 0x4654, ONpcApplied = 0x4658, ONpcRemoteRank = 0x465C,
         ONpcOut = 0x4670, ONpcIn = 0x4670 + NpcMax * NpcPoseSize;
     public const int NpcMax = 128, NpcPoseSize = 0x40;
+    // paid gates: a payment's follow-ups replayed in teammates' games
+    public const uint OPayOutSeq = 0x8670, OPayOutId = 0x8674, OPayOutEvent = 0x8678, OPayOutScene = 0x867C,
+        OPayInHead = 0x8680, OPayInTail = 0x8684, OPayIn = 0x8688;
+    public const int PayRing = 16;
     /// <summary>The patch's scratch serializer slot; never part of the world.</summary>
     public const uint ScratchTag = 0x42424F53; // 'BBOS'
     public const int LocalSize = 0x70, RemoteSize = 0x70;
