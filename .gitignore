@@ -27,3 +27,12 @@ NEXT-STEPS.md
 TESTSCENARIO.md
 INVESTIGATE*.md
 *-report.md
+
+# never commit keys or cloud account details
+*.pem
+*.key
+ssh_key*
+.oci/
+tools/oracle_retry.py
+
+tools/oracle_retry.log*

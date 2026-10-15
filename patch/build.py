@@ -110,7 +110,62 @@ BRANCHES = [
     (0x8007C55C, 0x9421FEE0, "bbol_colltrigger_stub"), # zEntPlayerCollTrigger: stwu r1,-0x120(r1)
 ]
 
-DELUXE_DOL_SHA1 = "c70e94750896d16255308610f364a8998d67bdbe"
+# RenderWare waits for the GPU to pass a draw-sync token with
+#   lhz r3, off(rB) | bl _rwDlTokenQueryDone | cmpwi r3, 0 | beq <the lhz>
+# A call inside the loop hides it from Dolphin's busy-wait detection, so the emulator really
+# runs every spin (a quarter of the browser build's CPU time in HB01). Each site jumps to a
+# branch-free copy of the same test instead, a loop Dolphin recognises and skips to the next
+# event. (site of the lhz, rB, off)
+TOKEN_WAITS = [
+    (0x8020B348, 31, 0x18),   # _rpSkinMainResEntryCB
+    (0x8020B464, 31, 0x18),
+    (0x8021F508, 31, 0x18),
+    (0x8022038C, 30, 0x00),
+    (0x8022041C, 30, 0x00),
+    (0x80247608, 26, 0x30),
+    (0x80248670, 31, 0x30),
+]
+
+
+def token_wait_asm():
+    """_rwDlTokenQueryDone(target) inlined: tok = PE token register (saved in -0x5FC0(r13) as
+    the original does), last = last issued token (-0x77D0(r13)). Pending while
+    (target - tok - 1) & 0xFFFF < (last - tok) & 0xFFFF, or tok >= 0xE000."""
+    out = ["    .text"]
+    for site, rb, off in TOKEN_WAITS:
+        out += [
+            f"    .globl bbol_tw_{site:08x}",
+            f"bbol_tw_{site:08x}:",
+            f"    lhz 3, {off}({rb})",      # target
+            "    lwz 4, -0x6458(13)",      # PE registers (GXReadDrawSync)
+            "    lhz 0, 0xE(4)",           # tok
+            "    lhz 5, -0x77D0(13)",      # last issued
+            "    subf 6, 0, 3",
+            "    addi 6, 6, -1",
+            "    clrlwi 6, 6, 16",         # d = target - tok - 1
+            "    subf 5, 0, 5",
+            "    clrlwi 5, 5, 16",         # e = last - tok
+            "    subf 6, 5, 6",
+            "    srwi 6, 6, 31",           # d < e
+            "    srwi 5, 0, 13",
+            "    addi 5, 5, 1",
+            "    srwi 5, 5, 3",            # tok >= 0xE000
+            "    or. 6, 6, 5",
+            f"    bne bbol_tw_{site:08x}",
+            "    sth 0, -0x5FC0(13)",
+            "    li 3, 1",
+            "    cmpwi 3, 0",
+            f"    b tw_cont_{site:08x}",
+        ]
+    return "\n".join(out) + "\n"
+
+
+for _site, _rb, _off in TOKEN_WAITS:
+    GAME_SYMBOLS[f"tw_cont_{_site:08x}"] = _site + 16          # after the original beq
+    if not os.environ.get("BBOL_NO_TOKENWAIT"):
+        BRANCHES.append((_site, (40 << 26) | (3 << 21) | (_rb << 16) | _off, f"bbol_tw_{_site:08x}"))
+
+DELUXE_DOL_SHA1 ="c70e94750896d16255308610f364a8998d67bdbe"
 STOCK_DOL_SHA1 = "2ba9746ca162426c675dd48d869639f7b3923c33"
 
 
@@ -142,8 +197,13 @@ def build_blob():
         o = os.path.join(OUT, f + ".o")
         zig("cc", *cflags, "-c", os.path.join(SRC, f), "-o", o)
         objs.append(o)
+    tw = os.path.join(OUT, "tokenwait.S")
+    with open(tw, "w") as fh:
+        fh.write(token_wait_asm())
+    zig("cc", *cflags, "-c", tw, "-o", tw + ".o")
+    objs.append(tw + ".o")
 
-    ld = os.path.join(OUT, "link.ld")
+    ld =os.path.join(OUT, "link.ld")
     with open(ld, "w") as fh:
         fh.write("ENTRY(bbol_player_update)\nSECTIONS {\n")
         fh.write(f"  . = 0x{LOAD_ADDR:08X};\n")
