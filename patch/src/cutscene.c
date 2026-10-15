@@ -14,6 +14,10 @@ static u32 lastCmgr;
 static u32 startedFor;    // cutscene manager we started for a teammate (not reported back)
 static u32 pendingCheck;  // frames left to see whether our request really started
 static u32 watched[WATCHED_MAX], nWatched, watchedScene;
+// A teammate's cutscene we watch along may end by moving the player to where it is staged (the
+// teammate's spot: a teleport box's cinematic took the watcher along). Put ours back afterwards.
+static f32 watchPos[3];
+static int watchingFor;   // 1 while a cutscene we started for a teammate plays
 
 static int seen(u32 id)
 {
@@ -30,12 +34,13 @@ void cutscene_frame(void)
 {
     u8* sc = (u8*)AT(u32, GLOBALS + G_SCENECUR);
     u32 scene = sc ? AT(u32, sc) : 0;
-    if (scene != watchedScene) { watchedScene = scene; nWatched = 0; startedFor = 0; pendingCheck = 0; lastCmgr = 0; }
+    if (scene != watchedScene) { watchedScene = scene; nWatched = 0; startedFor = 0; pendingCheck = 0; lastCmgr = 0; watchingFor = 0; }
 
     u32 cm = AT(u32, GLOBALS + G_CMGR);
     if (cm && cm != lastCmgr) {
         u32 id = AT(u32, cm);
         remember(id);
+        watchingFor = id == startedFor && startedFor;
         if (id != startedFor) {
             mb.csId = id;
             mb.csScene = scene;
@@ -43,6 +48,14 @@ void cutscene_frame(void)
         }
         startedFor = 0;
         pendingCheck = 0;
+    }
+    if (!cm && lastCmgr && watchingFor) {
+        // the teammate's cutscene ended here: back to where we stood when it started
+        watchingFor = 0;
+        mb.tpPos[0] = watchPos[0];
+        mb.tpPos[1] = watchPos[1];
+        mb.tpPos[2] = watchPos[2];
+        mb.tpSeq = mb.tpSeq + 1;
     }
     lastCmgr = cm;
 
@@ -60,6 +73,9 @@ void cutscene_frame(void)
     if (seen(mb.csPlayId)) return;                    // we already watched this one here
     u8* mgr = (u8*)zSceneFindObject(mb.csPlayId);
     if (!mgr || mgr[4] != BASE_CUTSCENEMGR) return;
+    u8* fr = (u8*)AT(u32, GLOBALS + G_ENT_FRAME);
+    if (!fr) return;
+    for (int k = 0; k < 3; k++) watchPos[k] = AT(f32, fr + FR_POS + 4 * k);
     startedFor = mb.csPlayId;
     remember(mb.csPlayId);
     pendingCheck = 30;
