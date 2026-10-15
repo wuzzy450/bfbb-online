@@ -302,7 +302,15 @@ static partial class SelfTest
     {
         foreach (var b in group)
             if (SceneOf(b) != scene) b.L.Warp(scene);
-        bool ok = WaitAll(group, scene, TimeSpan.FromSeconds(120));
+        // a warp sent to a paused game is lost: re-send it to stragglers until all arrive
+        bool ok = false;
+        for (int t = 0; t < 8 && !ok; t++)
+        {
+            ok = WaitAll(group, scene, TimeSpan.FromSeconds(15));
+            if (!ok && !group.Any(b => b.Hung != null))
+                foreach (var b in group)
+                    if (SceneOf(b) != scene && !b.L.LoadPending) { Log($"{b.Name}: still in {SN(SceneOf(b))}, warping again"); b.L.Warp(scene); }
+        }
         if (!ok) { Result($"warp to {SN(scene)}", false, Describe(group)); return false; }
         Thread.Sleep(2000);
         foreach (var b in group) WaitControl(b, TimeSpan.FromSeconds(60));
@@ -482,8 +490,10 @@ static partial class SelfTest
         bool ok = synced && sameDeltas && stable && once && (othersCtl & 0x1000) == 0 && aBack && raceOk;
         if (fell) note = " (A fell out of bounds after grabbing it: the scene reset in A's game)";
         if (levelDone) note += raceNote;
+        // compared with A's state now: the pickup keeps changing after `after` (reward animation ends)
+        uint aNow = Hash(A, o.index);
         var detail = $"#{o.index} {o.id:X8}{note}: A got {Fmt(dA)}" + (expect != null ? $" (expected {expect})" : "")
-            + "; " + string.Join("; ", others.Select((b, k) => $"{b.Name} {(levelDone ? "raced on" : Hash(b, o.index) == after ? "same state" : "STATE DIFFERS")}, got {Fmt(D(k + 1, c1))}"))
+            + "; " + string.Join("; ", others.Select((b, k) => $"{b.Name} {(levelDone ? "raced on" : Hash(b, o.index) == aNow ? "same state" : fell ? "state differs (A's scene reset)" : "STATE DIFFERS")}, got {Fmt(D(k + 1, c1))}"))
             + (stable ? "" : "; counters changed differently between the games afterwards (double count?)")
             + (othersCtl != 0 ? $"; a teammate's controls were off (controlOff {othersCtl:X}{((othersCtl & 0x1000) != 0 ? ": reward animation!" : ": level logic / own")})" : "")
             + (aBack ? "" : "; A never got control back");
