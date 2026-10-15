@@ -62,17 +62,33 @@ static int synced_kind(u8* b)
     return c == 'R' || c == 'T' || c == 'D' || c == 'A' || c == 'B' || c == 'H';
 }
 
-// Bosses' hit points and round (decomp offsets); 0 = not known (ownership by party id only).
-static void hp_fields(u32 t, u32* hp, u32* round)
+// Bosses' hit points and round (decomp offsets, checked in the Deluxe DOL); hp 0 = not known
+// (ownership by party id only), round 0 = none. Robo-Plankton has no hit points: his fight
+// advances active_territory (0x698) as fuses blow, so his "hp" counts down from HP_INV_BASE.
+#define HP_INV_BASE 100
+static void hp_fields(u32 t, u32* hp, u32* round, int* inv)
 {
-    *hp = *round = 0;
+    *hp = *round = 0; *inv = 0;
     switch (t) {
     case 0x4E544230: *hp = 0x2D4; *round = 0x2D8; break;   // NTB0 Robo-Sandy
     case 0x4E544231: *hp = 0x2B8; *round = 0x2BC; break;   // NTB1 Robo-Patrick
+    case 0x4E544233: *hp = 0x2C4; *round = 0x2C8; break;   // NTB3 Robo-SpongeBob (zNPCB_SB2::check_life)
+    case 0x4E544234: *hp = 0x698; *inv = 1; break;         // NTB4 Robo-Plankton (next_territory)
     case 0x4E544830: *hp = 0x2C4; *round = 0x2BC; break;   // NTH0 King Jellyfish
     case 0x4E544831: *hp = 0x2C4; *round = 0x2C8; break;   // NTH1 Flying Dutchman
     case 0x4E544832: *hp = 0x2B8; *round = 0x2BC; break;   // NTH2 Prawn
     }
+}
+
+static s32 hp_get(u8* b, u32 hpo, int inv)
+{
+    s32 v = AT(s32, b + hpo);
+    return inv ? HP_INV_BASE - v : v;
+}
+
+static void hp_put(u8* b, u32 hpo, int inv, s32 v)
+{
+    AT(s32, b + hpo) = inv ? HP_INV_BASE - v : v;
 }
 
 static int alive(u8* b)
@@ -250,9 +266,9 @@ static void fill_pose(volatile NpcPose* q, u32 i, u8* b, u32 boss)
     q->goal = psy ? GIDOfActive(psy) : 0;
     q->hp = 0; q->round = 0; q->epoch = 0;
     if (boss) {
-        u32 hpo, ro;
-        hp_fields(AT(u32, b + NPC_TYPE), &hpo, &ro);
-        if (hpo) { q->hp = (s16)AT(s32, b + hpo); q->round = (s16)AT(s32, b + ro); q->flags |= PF_HP; }
+        u32 hpo, ro; int inv;
+        hp_fields(AT(u32, b + NPC_TYPE), &hpo, &ro, &inv);
+        if (hpo) { q->hp = (s16)hp_get(b, hpo, inv); q->round = ro ? (s16)AT(s32, b + ro) : 0; q->flags |= PF_HP; }
         q->epoch = epoch[i];
     }
 }
@@ -293,8 +309,8 @@ void npcsync_frame(void)
             u8* b = npc_at(i, q->id);
             if (!b || !alive(b)) continue;
             if (q->flags & PF_BOSS) {
-                u32 hpo, ro;
-                hp_fields(AT(u32, b + NPC_TYPE), &hpo, &ro);
+                u32 hpo, ro; int inv;
+                hp_fields(AT(u32, b + NPC_TYPE), &hpo, &ro, &inv);
                 u32 theirRank = q->flags >> 8;
                 // a newer owner (they hit it), or the same generation and a lower party id: theirs
                 if (fresh && (q->epoch > epoch[i] || (q->epoch == epoch[i] && own[i] && theirRank < (mb.npcRank & 0xFF)))) {
@@ -304,7 +320,7 @@ void npcsync_frame(void)
                 if (own[i]) continue;
                 seenFrame[i] = now ? now : 1;
                 if (hpo && (q->flags & PF_HP)) {
-                    s32 hp = AT(s32, b + hpo);
+                    s32 hp = hp_get(b, hpo, inv);
                     if (lastHp[i] >= 0 && hp < lastHp[i] && q->hp >= lastHp[i]) {
                         // our player hit it since we last synced: take it over, keep our hit
                         own[i] = 1;
@@ -312,8 +328,8 @@ void npcsync_frame(void)
                         lastHp[i] = (s16)hp;
                         continue;
                     }
-                    AT(s32, b + hpo) = q->hp;
-                    AT(s32, b + ro) = q->round;
+                    hp_put(b, hpo, inv, q->hp);
+                    if (ro) AT(s32, b + ro) = q->round;
                     lastHp[i] = q->hp;
                 }
                 set_goal(i, b, q);
@@ -334,8 +350,8 @@ void npcsync_frame(void)
         if (!alive(b)) { own[i] = 0; continue; }
         u32 boss = is_boss_type(AT(u32, b + NPC_TYPE)) ? PF_BOSS : 0;
         if (boss) {
-            u32 hpo, ro;
-            hp_fields(AT(u32, b + NPC_TYPE), &hpo, &ro);
+            u32 hpo, ro; int inv;
+            hp_fields(AT(u32, b + NPC_TYPE), &hpo, &ro, &inv);
             // nobody has driven it yet: the lowest party id in the scene; the owner left (or never
             // showed up): we take over
             if (!own[i] && me) {
@@ -345,7 +361,7 @@ void npcsync_frame(void)
                     epoch[i] = (u16)(epoch[i] + 1);
                 }
             }
-            if (own[i] && hpo) lastHp[i] = (s16)AT(s32, b + hpo);
+            if (own[i] && hpo) lastHp[i] = (s16)hp_get(b, hpo, inv);
         } else {
             own[i] = me ? (u8)decide_enemy(i, b, me) : 0;
         }

@@ -396,7 +396,7 @@ static u32 rw_dirty_head(void) { u32 e = AT(u32, RW_ENGINE); return e ? AT(u32, 
 void bbol_scene_exit(s32 beginReload)
 {
     mb.dbgRender[10] = rw_dirty_head();
-    rwFrameSyncDirty();
+    if (!(mb.flags & 0x100000u)) rwFrameSyncDirty();   // 0x100000: diagnostics, no sync
     zSceneExit(beginReload);
     mb.dbgRender[11] = rw_dirty_head();
 }

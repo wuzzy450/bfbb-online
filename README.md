@@ -7,8 +7,9 @@ Dolphin. The whole party shares one campaign: spatulas, socks, shinies, tasks an
 - In the same level you see each other run around, with name tags over your heads.
 - Collect, smash, press or defeat something and it happens in everyone's game.
 
-> **Status:** work in progress. Tested with two players on one PC. Not yet tested between two
-> PCs or over the internet. Bug reports welcome in
+> **Status:** work in progress. Tested with two players on one PC (automated suite: 164/164 checks,
+> all 66 gameplay scenes plus the final-boss scenes load). Not yet tested between two PCs, over the
+> internet, or in a real 2-player final-boss fight. Bug reports welcome in
 > [Issues](https://github.com/wuzzy450/bfbb-online/issues).
 
 **Community:** join the [Discord](https://discord.gg/nuvpXycag8) · support the project on
