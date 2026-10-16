@@ -360,6 +360,10 @@ public sealed class Session : IDisposable
         foreach (var a in new[] { "-C", "Logger.Options.WriteToFile=True", "-C", "Logger.Options.Verbosity=3",
                                   "-C", "Logger.Logs.MASTER=True", "-C", "Logger.Logs.POWERPC=True", "-C", "Logger.Logs.CORE=True" })
             psi.ArgumentList.Add(a);
+        // diagnostics: extra Dolphin arguments (e.g. "-C Logger.Logs.MEMMAP=True")
+        var extra = Environment.GetEnvironmentVariable("BBOL_DOLPHIN_ARGS");
+        if (!string.IsNullOrEmpty(extra))
+            foreach (var a in extra.Split(' ', StringSplitOptions.RemoveEmptyEntries)) psi.ArgumentList.Add(a);
         dolphinLogPos = -1;
         // its own memory card (a GCI folder next to the launcher): the player's normal card often
         // holds the game's 3 save files already and the game then stops at "not enough space" on
@@ -622,6 +626,12 @@ public sealed class Session : IDisposable
                 log($"your character was frozen for 15 s with nothing going on: gave control back (held by 0x{link.DbgRender(30):X})");
             lastReleased = released;
         }
+        uint arena = link.DbgRender(32);
+        if (arena != lastArena)
+        {
+            lastArena = arena;
+            if (arena != 0) log("RW arena corrupt: " + ArenaReport(link));
+        }
         uint ts = link.TalkSeq;
         if (ts != lastTalkSeq)
         {
@@ -637,6 +647,16 @@ public sealed class Session : IDisposable
     }
 
     uint tappedButtons, lastButtonFrame;
+    uint lastArena;
+
+    /// <summary>The patch's first broken RenderWare resource arena walk (bbol.c arena_check).</summary>
+    public static string ArenaReport(GameLink l)
+    {
+        uint a = l.DbgRender(32), p = l.DbgRender(39);
+        return $"stage {a >> 24} (previous check {p >> 24}), frame {a & 0xFFFFFF}, block {l.DbgRender(33):X8} header " +
+            string.Join(" ", Enumerable.Range(34, 5).Select(k => l.DbgRender(k).ToString("X8"))) + $", previous block ..{p & 0xFFFFFF:X6}";
+    }
+
     uint lastReleased = uint.MaxValue, lastCutsceneSeq = uint.MaxValue, lastTalkSeq = uint.MaxValue, lastPaySeq = uint.MaxValue;
 
     // Payments (shiny doors...) made in the party, per scene: replayed in our game whenever we are

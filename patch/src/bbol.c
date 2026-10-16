@@ -411,11 +411,100 @@ static u32 heap_gap(void)
 #define RW_ENGINE 0x803CC87Cu
 static u32 rw_dirty_head(void) { u32 e = AT(u32, RW_ENGINE); return e ? AT(u32, e + 0xBC) : 1; }
 
+
+// --- RenderWare resource arena check (diagnostics) ----------------------------------------
+// The arena (instanced geometry) is a block heap: {heap, next, prev, size, used} 32-byte headers,
+// blocks back to back (_rwResHeapInit/_rwResHeapAlloc). Something rarely overwrites a header and
+// the game crashes much later in _rwResHeapAlloc. Walked at each of our steps of a frame: the first
+// broken walk names the step (or the stretch of the game's own code since the previous check).
+// mb.dbgRender[32] = stage << 24 | frame, [33] bad block, [34..38] its header, [39] = previous
+// stage << 24 | blocks walked. Stops after the first hit.
+#define RW_RESMOD 0x803CC848u
+static u32 arenaPrevStage, arenaHit;
+// InterruptHandlerTable, HeapArray, resourcesModule (offset), RwEngineInstance, the arena heap
+#define SENTINELS 5
+static u32 sentinelAddr[SENTINELS] = { 0x803CC570u, 0x803CC548u, 0x803CC848u, 0x803CC87Cu, 0 };
+static u32 sentinelVal[SENTINELS];
+static int in_ram(u32 a) { return a >= 0x80000000u && a < 0x82000000u; }
+void arena_check(u32 stage)
+{
+    if (arenaHit || (mb.flags & 0x200000u)) return;   // 0x200000: diagnostics, no arena check
+    // every step of the frame only with 0x400000 (diagnostics); normally once a frame and around
+    // scene changes, which is cheap and still logs that it happened
+    if (!(mb.flags & 0x400000u) && stage != 1 && stage < 21) return;
+    u32 e = AT(u32, RW_ENGINE);
+    if (!in_ram(e)) return;
+    sentinelAddr[4] = e + AT(u32, RW_RESMOD) + 0xC;
+    u32 heap = AT(u32, e + AT(u32, RW_RESMOD) + 0xC);
+    if (!heap) return;
+    // globals that never change once the game runs (the first crash had the OS interrupt handler
+    // table pointer overwritten with a float): changed -> block = the global's address,
+    // header = old value, new value
+    for (int k = 0; k < SENTINELS; k++) {
+        u32 v = AT(u32, sentinelAddr[k]);
+        if (!sentinelVal[k]) { sentinelVal[k] = v; continue; }
+        if (v != sentinelVal[k]) {
+            arenaHit = 1;
+            mb.dbgRender[32] = (stage << 24) | (mb.frames & 0xFFFFFFu);
+            mb.dbgRender[33] = sentinelAddr[k];
+            mb.dbgRender[34] = sentinelVal[k]; mb.dbgRender[35] = v;
+            mb.dbgRender[36] = 0x53454E54u; mb.dbgRender[37] = 0; mb.dbgRender[38] = 0;   // 'SENT'
+            mb.dbgRender[39] = arenaPrevStage << 24;
+            return;
+        }
+    }
+    // the main camera's world (RenderWare reads it as the current world while drawing; a garbage one
+    // crashed in _rwGCLightsGlobalEnable on the first frame of SM05): 'CWLD', camera, world
+    {
+        u32 cam = AT(u32, GLOBALS + G_CAMERA + G_CAMERA_LOCAM);
+        if (in_ram(cam)) {
+            u32 w = AT(u32, cam + AT(u32, 0x803CC7E8u) + 0xC);
+            u32 cw = AT(u32, e + 4), cc = AT(u32, e);
+            if (cw && !in_ram(cw)) w = cw;
+            if (cc && !in_ram(cc)) w = cc;
+            if (w && !in_ram(w)) {
+                arenaHit = 1;
+                mb.dbgRender[32] = (stage << 24) | (mb.frames & 0xFFFFFFu);
+                mb.dbgRender[33] = cam;
+                mb.dbgRender[34] = w; mb.dbgRender[35] = AT(u32, e + 4);
+                mb.dbgRender[36] = 0x43574C44u; mb.dbgRender[37] = AT(u32, cam + 4); mb.dbgRender[38] = AT(u32, 0x803CC7E8u);
+                mb.dbgRender[39] = arenaPrevStage << 24;
+                return;
+            }
+        }
+    }
+    u32 bad = 0, b = 0, prev = 0, n = 0;
+    if (!in_ram(heap)) bad = heap;
+    else {
+        u32 ff = AT(u32, heap + 4);
+        if (ff && (!in_ram(ff) || (ff & 31))) bad = heap;
+        b = AT(u32, heap);
+        while (!bad && b) {
+            if (!in_ram(b) || (b & 31)) { bad = b ? b : 1; break; }
+            u32 nx = AT(u32, b + 4), sz = AT(u32, b + 0xC);
+            if (AT(u32, b) != heap || AT(u32, b + 8) != prev || AT(u32, b + 0x10) > 1 || (sz & 31)
+                || (nx && nx != b + 0x20 + sz) || ++n > 200000) { bad = b; break; }
+            prev = b;
+            b = nx;
+        }
+    }
+    if (bad) {
+        arenaHit = 1;
+        mb.dbgRender[32] = (stage << 24) | (mb.frames & 0xFFFFFFu);
+        mb.dbgRender[33] = bad;
+        for (int k = 0; k < 5; k++) mb.dbgRender[34 + k] = in_ram(bad) ? AT(u32, (bad & ~3u) + 4 * k) : 0;
+        mb.dbgRender[39] = (arenaPrevStage << 24) | (prev & 0xFFFFFFu);
+    }
+    arenaPrevStage = stage;
+}
+
 void bbol_scene_exit(s32 beginReload)
 {
+    arena_check(21);
     mb.dbgRender[10] = rw_dirty_head();
     if (!(mb.flags & 0x100000u)) rwFrameSyncDirty();   // 0x100000: diagnostics, no sync
     zSceneExit(beginReload);
+    arena_check(22);
     mb.dbgRender[11] = rw_dirty_head();
 }
 
@@ -482,6 +571,7 @@ void bbol_setup_player(void)
     mb.highRam = high;
     load(&tmp, SW_ALL);
     AT(u32, XMODELINSTSTATICALLOC) = oldStatic;
+    arena_check(23);
     load_handshake();
 }
 
@@ -502,8 +592,10 @@ void bbol_player_update(void* ent, void* scene, f32 dt)
 {
     fn_update up = AT(fn_update, GLOBALS + G_ENT_UPDATE);
     int sim = bridged() && mb.mode == MODE_SIM;
+    arena_check(1);
     if (sim) park_local();
     else up(ent, scene, dt);
+    arena_check(2);
     mb.frames++;
     mb.dbgRender[14] = rw_dirty_head();
     if (bridged()) inventory_frame();
@@ -519,12 +611,16 @@ void bbol_player_update(void* ent, void* scene, f32 dt)
         if (frame_of_live()) place(frame_of_live(), model_of_live(), p);
     }
     if (!(mb.flags & 1024u)) objsync_frame();   // 1024: diagnostics, no object sync
+    arena_check(3);
     npcsync_frame();
+    arena_check(4);
     handle_warp();
+    arena_check(5);
     int updated = 0;
     for (int i = 0; i < MAX_REMOTE; i++) {
         if (info[i].valid && mb.remote[i].active) {
             puppet_update(i, scene, dt);
+            arena_check(6 + i);
             updated = 1;
         } else
             info[i].placed = 0;
@@ -539,6 +635,7 @@ void bbol_player_update(void* ent, void* scene, f32 dt)
     // the next camera update. If the scene switches first, their memory is gone (the game never
     // destroys puppets) and that sync jumped to a NULL callback. Sync now, while they're valid.
     if (updated) rwFrameSyncDirty();
+    arena_check(11);
 }
 
 // --- name tags ---------------------------------------------------------------------------
@@ -589,7 +686,9 @@ void bbol_player_render(void* ent)
 {
     fn_render rf = AT(fn_render, GLOBALS + G_ENT_RENDER);
     if (mb.flags & 64u) xModelEval(model_of_live());   // diagnostics
+    arena_check(12);
     rf(ent);
+    arena_check(13);
     if (!bridged()) return;
     // a cinematic's cameras are staged for one SpongeBob: show only ours
     if (AT(u32, GLOBALS + G_CMGR)) return;
@@ -618,6 +717,7 @@ void bbol_player_render(void* ent)
         rf((void*)(GLOBALS + G_PLAYER));
         load(&tmp, SW_PLAYER | SW_STATICS);
         rwFrameSyncDirty();   // see bbol_player_update
+        arena_check(14 + i);
     }
     if (mb.flags & MBF_NO_NAMETAGS) return;
     for (int i = 0; i < MAX_REMOTE; i++) {
@@ -627,6 +727,7 @@ void bbol_player_render(void* ent)
         f32 head[3] = { AT(f32, fr + FR_POS), AT(f32, fr + FR_POS + 4) + 1.3f, AT(f32, fr + FR_POS + 8) };
         name_tag(head, &mb.remote[i]);
     }
+    arena_check(19);
 }
 
 // zSceneReset: bl zEntPlayerReset(&globals.player.ent)
@@ -739,7 +840,86 @@ s32 bbol_pad_update(s32 idx, f32 dt)
         AT(s8, pad + PAD_ANALOG2 + 1) = mb.pcy;
     }
     // runs every game frame, also while gameplay is frozen for a cutscene (after the pad is final)
-    if (bridged() && idx == AT(u8, GLOBALS + 0x6D1) && AT(u32, GLOBALS + G_SCENECUR) && !(mb.flags & (1024u | 16384u))) { cutscene_frame(); talk_frame(); control_watchdog(); }
+    if (bridged() && idx == AT(u8, GLOBALS + 0x6D1) && AT(u32, GLOBALS + G_SCENECUR) && !(mb.flags & (1024u | 16384u))) { arena_check(20); cutscene_frame(); talk_frame(); control_watchdog(); arena_check(24); }
+    return r;
+}
+
+
+// Streamed sounds (voice lines, Deluxe's music in mnu5.HIP) play on 6 channels, each with a DVDFileInfo
+// at +0x98 whose command block reads 0x4000-byte chunks into the channel's slice of one 0x18100-byte
+// buffer. The game reuses that block while the DVD driver still owns it: the audio frame callback
+// (fcb) stops a stream with DVDCancelAsync and may restart the channel in the same callback, and it
+// also asks for the next chunk on its own flags. Requeuing or overwriting a block that is queued or
+// being transferred breaks the driver's state; it then went on with a 0x80000-byte DMA from the
+// buffer onward that wrote a whole sound over RenderWare's engine and resource arena (crash in
+// _rwResHeapAlloc / _rwGCLightsGlobalEnable, mostly on the first frame of a level). Fix: a read on a
+// stream block that is still in flight is held and issued from that block's completion callback,
+// and iSndPrepStream's copy of a fresh DVDFileInfo leaves the live command block alone.
+#define SND_CHANNELS 0x803C9140u   // stream channels, 0x10C each; DVDFileInfo at +0x98
+#define DVDCB_STATE    0x0Cu
+#define DVDCB_CALLBACK 0x28u
+#define DVDCB_SIZE     0x30u
+typedef void (*fn_dvdcb)(s32 result, void* block);
+s32 DVDReadAbsAsyncPrio_orig(void* block, void* addr, s32 len, s32 offset, fn_dvdcb cb, s32 prio);
+typedef struct { u32 pending; void* addr; s32 len, offset; fn_dvdcb cb; s32 prio; fn_dvdcb inflightCb; } HeldRead;
+static HeldRead held[6];
+
+static int stream_channel(u32 blk)
+{
+    u32 d = blk - (SND_CHANNELS + 0x98u);
+    if (blk < SND_CHANNELS + 0x98u || d % 0x10Cu) return -1;
+    d /= 0x10Cu;
+    return d < 6 ? (int)d : -1;
+}
+
+static int dvd_in_flight(u32 blk) { s32 st = AT(s32, blk + DVDCB_STATE); return st == 1 || st == 2; }   // BUSY / WAITING
+
+// the in-flight block's completion: its own callback first, then the held read
+static void held_read_cb(s32 result, void* block)
+{
+    int i = stream_channel((u32)block);
+    if (i < 0) return;
+    HeldRead* h = &held[i];
+    AT(u32, (u32)block + DVDCB_CALLBACK) = (u32)h->inflightCb;
+    if (h->inflightCb) h->inflightCb(result, block);
+    if (h->pending && !dvd_in_flight((u32)block)) {
+        h->pending = 0;
+        DVDReadAbsAsyncPrio_orig(block, h->addr, h->len, h->offset, h->cb, h->prio);
+    }
+}
+
+// DVDReadAbsAsyncPrio entry (stubs.S bbol_dvdread_stub): 1 = go ahead, 0 = held (the caller gets TRUE)
+s32 bbol_dvd_guard(void* block, void* addr, s32 len, s32 offset, fn_dvdcb cb, s32 prio)
+{
+    int i = stream_channel((u32)block);
+    if (i < 0) return 1;
+    u32 lvl = OSDisableInterrupts();
+    if (!dvd_in_flight((u32)block)) { OSRestoreInterrupts(lvl); return 1; }
+    HeldRead* h = &held[i];
+    if (AT(u32, (u32)block + DVDCB_CALLBACK) != (u32)held_read_cb) {
+        h->inflightCb = (fn_dvdcb)AT(u32, (u32)block + DVDCB_CALLBACK);
+        AT(u32, (u32)block + DVDCB_CALLBACK) = (u32)held_read_cb;
+    }
+    h->pending = 1; h->addr = addr; h->len = len; h->offset = offset; h->cb = cb; h->prio = prio;   // newest wins
+    mb.dbgRender[7]++;   // diagnostics: stream reads held back
+    OSRestoreInterrupts(lvl);
+    return 0;
+}
+
+// iSndPlay: bl iSndPrepStream(voice)
+u32 bbol_snd_prep_stream(void* voice)
+{
+    u32 idx = ((u32)voice - (0x803BD5B4u + 0x1Cu)) / 0x64u;   // xSndVoiceInfo index, as iSndPlay computes it
+    if (idx >= 6) return iSndPrepStream(voice);
+    u32 blk = SND_CHANNELS + idx * 0x10Cu + 0x98u;
+    u32 lvl = OSDisableInterrupts();
+    if (!dvd_in_flight(blk)) { OSRestoreInterrupts(lvl); return iSndPrepStream(voice); }
+    u8 keep[DVDCB_SIZE];
+    memcpy(keep, (void*)blk, DVDCB_SIZE);
+    u32 r = iSndPrepStream(voice);
+    memcpy((void*)blk, keep, DVDCB_SIZE);
+    mb.dbgRender[6]++;   // diagnostics: stream set up over a busy block
+    OSRestoreInterrupts(lvl);
     return r;
 }
 
@@ -747,7 +927,9 @@ s32 bbol_pad_update(s32 idx, f32 dt)
 void bbol_scene_render(void)
 {
     if (bridged() && mb.mode == MODE_SIM) return;
+    arena_check(25);
     zSceneRender();
+    arena_check(26);
 }
 
 // zGameLoop: bl iEnvEndRenderFX(env). Needs state iEnvRender sets inside zSceneRender.
@@ -821,3 +1003,33 @@ u32 bbol_boot(void)
     }
     return AT(u32, SSHOWMENUONBOOT);
 }
+
+
+#ifdef BBOL_XFER_PROBE
+// diagnostics (see stubs.S): a DMA into main RAM that starts in the sound streaming/loading buffer and
+// runs past its end, or that touches RenderWare's engine block. dbgRender[21] = count << 8 | kind |
+// 0x10 engine | 0x20 overrun, [22] dst, [23] len, [24] caller, [25] DVD offset / ARQ type
+#define SND_BUF 0x803CBBCCu
+void bbol_xfer_check(u32 kind, u32 dst, u32 len, u32 caller, u32 x)
+{
+    mb.dbgRender[kind == 1 ? 19 : 20]++;      // calls seen (proof the hooks run)
+    if (kind == 1 && x != 1) return;          // ARQ: only ARAM -> main RAM
+    // compare physical addresses: ARQ takes them physical, DMA buffers may be uncached (0xC...)
+    u32 b = AT(u32, SND_BUF) & 0x01FFFFFFu, e = AT(u32, RW_ENGINE) & 0x01FFFFFFu;
+    dst &= 0x01FFFFFFu;
+    u32 end = dst + len;
+    int over = b && dst >= b && dst < b + 0x18100u && end > b + 0x18100u;
+    int eng = e && dst < e + 0x800u && end > e;
+    if (!over && !eng) return;
+    u32 n = (mb.dbgRender[21] >> 8) + 1;
+    if (n == 1) {
+        mb.dbgRender[22] = dst; mb.dbgRender[23] = len; mb.dbgRender[24] = caller; mb.dbgRender[25] = x;
+        // DVDLowRead: the request block behind it (DVDCommandBlock: offset 0x10, length 0x14, addr 0x18,
+        // transferred 0x20) -> [26..28]
+        if (kind == 2 && x >= 0x80000000u && x < 0x82000000u) {
+            mb.dbgRender[26] = AT(u32, x + 0x14); mb.dbgRender[27] = AT(u32, x + 0x18); mb.dbgRender[28] = AT(u32, x + 0x10);
+        }
+    }
+    mb.dbgRender[21] = (n << 8) | kind | (eng ? 0x10u : 0) | (over ? 0x20u : 0);
+}
+#endif

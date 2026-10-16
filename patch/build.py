@@ -23,6 +23,9 @@ GAME_SYMBOLS = {
     "strcpy": 0x801E7700,
     "OSReport": 0x801D2F04,
     "VIWaitForRetrace": 0x801DB9B8,
+    "iSndPrepStream": 0x800D1938,             # iSndPrepStream(xSndVoiceInfo*)
+    "OSDisableInterrupts": 0x801D4310,
+    "OSRestoreInterrupts": 0x801D4338,
     "DCFlushRange": 0x801D2358,
     "xPadNormalizeAnalog": 0x80036478,
     "xPadUpdate": 0x80035FC4,
@@ -63,6 +66,9 @@ GAME_SYMBOLS = {
     "CollTrigger_cont": 0x8007C560,           # zEntPlayerCollTrigger + 4
     "ZEntEvent_cont": 0x8001F75C,
     "zPlatform_Update_cont": 0x800AADE8,             # zEntEvent(xBase*, U32, xBase*, U32, ...) + 4
+    "DVDReadAbsAsyncPrio_cont": 0x801C5D18,
+    "ARQPostRequest_cont": 0x801B79E8,
+    "DVDLowRead_cont": 0x801C2EE8,
     "GiveReward_cont": 0x800F1D44,            # zNPCCommon::GiveReward + 4              # zSceneExit(S32 beginReload)        # _rwFrameSyncDirty()        # iCameraUpdatePos(RwCamera*, xMat4x3*)
     "ztaskbox_start_talk": 0x80134AC8,     # ztaskbox::start_talk(zNPCCommon*)
     "ztalkbox_start_talk_id": 0x80132A14,  # ztalkbox::start_talk(U32, callback*, zNPCCommon*)              # zEntEvent(xBase* from, xBase* to, U32 event)
@@ -92,10 +98,12 @@ HOOKS = [
     (0x80132A44, ("bl", 0x80132890), "bbol_talk_start_talk"),   # ztalkbox::start_talk(id)
     (0x80132A70, ("bl", 0x80132890), "bbol_talk_start_talk"),
     (0x8011C43C, ("bl", 0x80132A14), "bbol_talk_start_talk_id"),  # oob_state: tutorial talk
+    (0x800D220C, ("bl", 0x800D1938), "bbol_snd_prep_stream"),  # iSndPlay: iSndPrepStream(voice)
     (0x8009787C, ("bl", 0x800B2068), "bbol_scene_exit"),     # zGameExit: zSceneExit(1)
     (0x80097888, ("bl", 0x800B2068), "bbol_scene_exit"),     # zGameExit: zSceneExit(0)
     (0x800A60B4, ("bl", 0x800B2068), "bbol_scene_exit"),     # zMainLoop/menu: zSceneExit
 ]
+
 
 # Plain instruction patches: (site, original, replacement, what).
 RAW = [
@@ -112,8 +120,15 @@ BRANCHES = [
     (0x800F1D40, 0x9421FFD0, "bbol_givereward_stub"),  # zNPCCommon::GiveReward: stwu r1,-0x30(r1)
     (0x8007C55C, 0x9421FEE0, "bbol_colltrigger_stub"), # zEntPlayerCollTrigger: stwu r1,-0x120(r1)
     (0x8001F758, 0x9421FFE0, "bbol_event_stub"),
+    (0x801C5D14, 0x7C0802A6, "bbol_dvdread_stub"),     # DVDReadAbsAsyncPrio: mflr r0 (stream block guard)
     (0x800AADE4, 0x9421FF50, "bbol_platform_update"),  # zPlatform_Update: stwu r1,-0xB0(r1)       # zEntEvent(from, fromEvent, to, ...): stwu r1,-0x20(r1)
 ]
+if os.environ.get("BBOL_XFER_PROBE"):
+    BRANCHES += [
+        (0x801B79E4, 0x7C0802A6, "bbol_arq_stub"),      # ARQPostRequest: mflr r0
+        (0x801C2EE4, 0x7C0802A6, "bbol_dvdlow_stub"),   # DVDLowRead: mflr r0
+    ]
+
 
 # RenderWare waits for the GPU to pass a draw-sync token with
 #   lhz r3, off(rB) | bl _rwDlTokenQueryDone | cmpwi r3, 0 | beq <the lhz>
@@ -198,6 +213,9 @@ def build_blob():
     if os.environ.get("MINIMAL"):
         # test build: only the boot-scene hook, booting straight into $MINIMAL (e.g. B301)
         cflags.append("-DMINIMAL_BOOT=0x" + os.environ["MINIMAL"].encode().hex())
+    for k in ("BBOL_XFER_PROBE",):   # diagnostics: DMA watch (bbol_xfer_check)
+        if os.environ.get(k):
+            cflags.append("-D" + k)
     for f in ("bbol.c", "objsync.c", "cutscene.c", "npcsync.c", "stubs.S"):
         o = os.path.join(OUT, f + ".o")
         zig("cc", *cflags, "-c", os.path.join(SRC, f), "-o", o)

@@ -98,6 +98,9 @@ void* memset(void* d, int c, u32 n);
 char* strcpy(char* d, const char* s);
 void OSReport(const char* fmt, ...);
 void VIWaitForRetrace(void);
+u32 iSndPrepStream(void* voice);
+u32 OSDisableInterrupts(void);
+u32 OSRestoreInterrupts(u32 level);
 void DCFlushRange(void* p, u32 n);
 
 void xPadNormalizeAnalog(void* pad, s32 inner, s32 outer);

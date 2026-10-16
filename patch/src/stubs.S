@@ -142,3 +142,94 @@ bbol_event_stub:
 zPlatform_Update_orig:
     stwu 1, -0xB0(1)
     b zPlatform_Update_cont
+
+#ifdef BBOL_XFER_PROBE
+# diagnostics: DVDReadAbsAsyncPrio(block, addr, len, offset, cb, prio) / ARQPostRequest(req, owner,
+# type, prio, src, dst, len, cb) entries (both were `mflr r0`):
+# bbol_xfer_check(kind, dst, len, caller, x)
+    .macro XFER_STUB name, kind, dst, len, x, cont
+    .globl \name
+\name:
+    stwu 1, -0x40(1)
+    mflr 0
+    stw 0, 0x44(1)
+    stw 3, 0x08(1)
+    stw 4, 0x0C(1)
+    stw 5, 0x10(1)
+    stw 6, 0x14(1)
+    stw 7, 0x18(1)
+    stw 8, 0x1C(1)
+    stw 9, 0x20(1)
+    stw 10, 0x24(1)
+    mr 12, \dst
+    mr 11, \len
+    mr 7, \x
+    li 3, \kind
+    mr 4, 12
+    mr 5, 11
+    mr 6, 0
+    bl bbol_xfer_check
+    lwz 3, 0x08(1)
+    lwz 4, 0x0C(1)
+    lwz 5, 0x10(1)
+    lwz 6, 0x14(1)
+    lwz 7, 0x18(1)
+    lwz 8, 0x1C(1)
+    lwz 9, 0x20(1)
+    lwz 10, 0x24(1)
+    lwz 0, 0x44(1)
+    mtlr 0
+    addi 1, 1, 0x40
+    mflr 0
+    b \cont
+    .endm
+    XFER_STUB bbol_arq_stub, 1, 8, 9, 5, ARQPostRequest_cont
+    # DVDLowRead(addr, len, offset, cb): r7 still holds the DVD driver's executing block (stateBusy)
+    XFER_STUB bbol_dvdlow_stub, 2, 3, 4, 7, DVDLowRead_cont
+#endif
+
+# DVDReadAbsAsyncPrio(block, addr, len, offset, cb, prio) entry (was `mflr r0`): bbol_dvd_guard
+# decides; 0 = the read was held for later and the caller gets TRUE.
+    .globl bbol_dvdread_stub
+bbol_dvdread_stub:
+    stwu 1, -0x30(1)
+    mflr 0
+    stw 0, 0x34(1)
+    stw 3, 0x08(1)
+    stw 4, 0x0C(1)
+    stw 5, 0x10(1)
+    stw 6, 0x14(1)
+    stw 7, 0x18(1)
+    stw 8, 0x1C(1)
+#ifdef BBOL_XFER_PROBE
+    mr 7, 6
+    mr 6, 0
+    li 3, 0
+    bl bbol_xfer_check
+    lwz 3, 0x08(1)
+    lwz 4, 0x0C(1)
+    lwz 5, 0x10(1)
+    lwz 6, 0x14(1)
+    lwz 7, 0x18(1)
+#endif
+    bl bbol_dvd_guard
+    mr 12, 3
+    lwz 3, 0x08(1)
+    lwz 4, 0x0C(1)
+    lwz 5, 0x10(1)
+    lwz 6, 0x14(1)
+    lwz 7, 0x18(1)
+    lwz 8, 0x1C(1)
+    lwz 0, 0x34(1)
+    mtlr 0
+    addi 1, 1, 0x30
+    cmpwi 12, 0
+    bne DVDReadAbsAsyncPrio_orig
+    li 3, 1
+    blr
+
+# DVDReadAbsAsyncPrio as the game had it (its entry now branches to bbol_dvdread_stub).
+    .globl DVDReadAbsAsyncPrio_orig
+DVDReadAbsAsyncPrio_orig:
+    mflr 0
+    b DVDReadAbsAsyncPrio_cont

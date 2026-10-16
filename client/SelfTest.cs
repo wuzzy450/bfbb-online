@@ -97,6 +97,7 @@ static partial class SelfTest
         return sb.ToString();
     }
 
+    static readonly HashSet<string> arenaLogged = new();
     static void Watch(Bot b)
     {
         lock (watched) watched.Add(b);
@@ -110,6 +111,10 @@ static partial class SelfTest
                 {
                     var l = w.S.Link;
                     if (l == null || w.Hung != null) { w.lastChange = DateTime.UtcNow; continue; }
+                    uint sw = l.DbgRender(6) + l.DbgRender(7);
+                    if (sw != 0 && arenaLogged.Add($"{w.Name}snd{sw}")) Log($"{w.Name}: sound stream block in flight: set up over it {l.DbgRender(6)}x, reads held {l.DbgRender(7)}x");
+                    if (l.DbgRender(21) != 0 && arenaLogged.Add(w.Name + "xfer")) Log($"{w.Name}: BAD DMA: flags {l.DbgRender(21):X}, dst {l.DbgRender(22):X8}, len {l.DbgRender(23):X}, caller {l.DbgRender(24):X8}, offset/type/block {l.DbgRender(25):X8}, block length {l.DbgRender(26):X} addr {l.DbgRender(27):X8} offset {l.DbgRender(28):X8}");
+                    if (l.DbgRender(32) != 0 && arenaLogged.Add(w.Name)) Log($"{w.Name}: RW ARENA CORRUPT: {Session.ArenaReport(l)}");
                     uint f = l.Frames, pf = l.Mem.ReadU32(GameLink.MailboxAddr + Mb.ODbgRender + 20);
                     bool valid = l.TryReadLocal(out PlayerState _) && l.Mem.ReadU32(GameLink.MailboxAddr) == Mb.Magic;
                     if (valid) w.lastValid = DateTime.UtcNow;
@@ -123,6 +128,21 @@ static partial class SelfTest
                     Log("  " + DvdState(l));
                     Log($"  OS heap free {l.OsHeapFree().free / 1024} KB, largest {l.OsHeapFree().largest / 1024} KB, added {l.Mem.ReadU32(GameLink.MailboxAddr + Mb.OOsHeapAdded) / 1024} KB");
                     Log($"  GX tokens: last read {l.Mem.Read(0x803CC940, 2)[0] * 256 + l.Mem.Read(0x803CC940, 2)[1]:X4}, issued {l.Mem.Read(0x803CB130, 2)[0] * 256 + l.Mem.Read(0x803CB130, 2)[1]:X4}");
+                    try
+                    {
+                        uint eng = l.Mem.ReadU32(0x803CC87C), cur = l.Mem.ReadU32(eng), ext = l.Mem.ReadU32(0x803CC7E8), main = l.Mem.ReadU32(0x803C0558 + 0x10);
+                        uint W(uint c) => c >= 0x80000000 && c < 0x82000000 ? l.Mem.ReadU32(c + ext + 0xC) : 0;
+                        Log($"  RW cameras: current {cur:X8} (world {W(cur):X8}, frame {(cur >= 0x80000000 ? l.Mem.ReadU32(cur + 4) : 0):X8}), main {main:X8} (world {W(main):X8}), curWorld {l.Mem.ReadU32(eng + 4):X8}");
+                    }
+                    catch (Exception) { }
+                    try
+                    {
+                        uint sb = l.Mem.ReadU32(0x803CBBCC);
+                        var path = System.IO.Path.Combine(AppContext.BaseDirectory, "selftest", $"sndbuf-{w.Name}-{sb:X8}.bin");
+                        System.IO.File.WriteAllBytes(path, l.Mem.Read(sb, 0x40000));
+                        Log($"  sound buffer {sb:X8} + 256 KB saved to {path}");
+                    }
+                    catch (Exception e) { Log($"  sound buffer dump failed: {e.Message}"); }
                     try { Log($"  RW resource arena: {ArenaDump(l)}"); } catch (Exception e) { Log($"  RW resource arena unreadable: {e.Message}"); }
                     for (int k = 0; k < 4; k++) { Log("  " + CpuSample(l)); Thread.Sleep(150); }
                     Log("  " + RwDirty(l) + " | stage heads exit-before/exit-after/setup-before/setup-after/frame, -, rootless LR/count/frame: " + string.Join(" ", Enumerable.Range(10, 19).Select(k => l.Mem.ReadU32(GameLink.MailboxAddr + Mb.ODbgRender + 4 * (uint)k).ToString("X8"))));
@@ -267,6 +287,7 @@ static partial class SelfTest
                     }
                     uint Dbg(int k) => S.L.Mem.ReadU32(GameLink.MailboxAddr + Mb.ODbgRender + 4 * (uint)k);
                     if (Dbg(29) != 0) Log($"{name}: race/challenge end chain: {Dbg(29)} objects kept per player");
+                    if (Dbg(32) != 0) Log($"{name}: RW ARENA CORRUPT: {Session.ArenaReport(S.L)}");
                     if (Enumerable.Range(0, 5).Any(k => Dbg(20 + 2 * k) != 0)) Log($"{name}: RW guards (translate/transform/rotate/addchild/ortho caller x count): " + string.Join(" ", Enumerable.Range(0, 5).Select(k => $"{Dbg(19 + 2 * k):X8}x{Dbg(20 + 2 * k)}")));
                     if (Dbg(17) != 0) Log($"{name}: RwFrameUpdateObjects skipped {Dbg(17)} rootless frames, last {Dbg(18):X8} from {Dbg(16):X8}");
                     Result("survey " + name, true, $"puppets {S.L.CtxReady}{(S.L.HighRam ? " (high RAM)" : "")}, free heap {S.L.HeapGap / 1024} KB, OS heap free {S.L.OsHeapFree().free / 1024} KB (+{S.L.Mem.ReadU32(GameLink.MailboxAddr + Mb.OOsHeapAdded) / 1024} KB) (largest {S.L.OsHeapFree().largest / 1024}), puppet heap {string.Join("/", S.L.HeapFree.Take((int)S.L.CtxReady + 1).Select(f => f / 1024))} KB. " + Survey(S));
@@ -292,6 +313,11 @@ static partial class SelfTest
 
             // 1. both in the scene, puppets built, object table primed
             bool up = WaitAll(bots, scene, TimeSpan.FromSeconds(120));
+            {
+                var M = A.L.Mem;
+                string H(int k) { uint h = 0x8038C5E4u + 0xDCu * (uint)k; return $"heap{k} base {M.ReadU32(h + 4):X8} size {M.ReadU32(h + 8):X}"; }
+                Log($"DMA probe calls: DVD {A.L.DbgRender(20)}, ARQ {A.L.DbgRender(19)}; memory layout: arenaLo {M.ReadU32(0x803CC550):X8}..{M.ReadU32(0x803CC554):X8}, RW engine {M.ReadU32(0x803CC87C):X8}, sound buffer {M.ReadU32(0x803CBBC8):X8}/{M.ReadU32(0x803CBBCC):X8}, arena heap {M.ReadU32(M.ReadU32(0x803CC87C) + M.ReadU32(0x803CC848) + 0xC):X8}, {H(0)}, {H(1)}, {H(2)}");
+            }
             Result("presence", up, up ? $"A and B in {PlayerState.SceneName(scene)}, puppet contexts A {A.L.CtxReady} B {B.L.CtxReady} (heap A {string.Join("/", A.L.HeapFree.Select(f => f / 1024))} KB), objects primed" : Describe(bots));
             if (!up) return Finish(bots, a);
             Thread.Sleep(3000);
