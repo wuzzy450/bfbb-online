@@ -53,6 +53,9 @@ static partial class SelfTest
         Phase("bosses", () => BossSyncPhase(bots, a.GetValueOrDefault("bossscenes", "B101,B201,JF04,GY04,BC05").Split(',')));
         Phase("heapcmp", () => HeapCmp(bots, a.GetValueOrDefault("tpscenes", "B101,JF01").Split(',')));
         Phase("teleport", () => TeleportPhase(bots, a.GetValueOrDefault("tpscenes", "JF01,B101").Split(',')));
+        Phase("cheats", () => CheatsPhase(bots));
+        Phase("abilities", () => AbilitiesPhase(bots, a));
+        Phase("loadstorm", () => LoadStormPhase(bots, a));
         Phase("racediag", () => RaceDiag(bots, a.GetValueOrDefault("raceobj", "GOLDENSPAT_PICKUP_02")));
     }
 

@@ -710,6 +710,10 @@ s32 bbol_pad_update(s32 idx, f32 dt)
 {
     s32 r = xPadUpdate(idx, dt);
     if (idx == 0) mb.dbgRender[5]++;   // diagnostics: game loop frames (also while paused)
+    // pause menu (gGameMode 7): the player doesn't update, but cheats change counters here; publish
+    // them so the launcher reports them before the player leaves through the menu (map, quit)
+    if (idx == 0 && bridged() && AT(u32, GGAMEMODE) == 7)
+        for (int i = 0; i < INV_COUNTERS; i++) mb.invCount[i] = AT(u32, inv_addr(i));
     if (bridged() && (mb.flags & MBF_WARP_ANYTIME) && AT(u32, GGAMEMODE) == 12) handle_warp();
     if (bridged() && idx == 0 && mb.evtSeq != mb.evtAck && AT(u32, GLOBALS + G_SCENECUR)) {
         mb.evtAck = mb.evtSeq;

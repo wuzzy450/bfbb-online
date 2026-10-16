@@ -143,7 +143,7 @@ static partial class SelfTest
 
     static void Result(string name, bool ok, string detail)
     {
-        results.Add((name, ok, detail));
+        lock (results) results.Add((name, ok, detail));
         Log($"{(ok ? "PASS" : "FAIL")} {name}: {detail}");
     }
 
@@ -252,9 +252,16 @@ static partial class SelfTest
             catch (Exception e) { Result("survey", false, "crashed: " + e); }
             return Finish(bots, a);
         }
+        if (a.ContainsKey("chaos"))
+        {
+            ctx = new Ctx(server, party, port, dolphin, work, scene, hub);
+            try { ChaosMode(a, bots); }
+            catch (Exception e) { Result("chaos", false, "crashed: " + e); }
+            return Finish(bots, a);
+        }
         try
         {
-            var phases = a.GetValueOrDefault("phases", "core,pickups,keys,enemies,npcmove,bosses,teleport,cutscenes,talk,fourmaps").Split(',').ToHashSet();
+            var phases = a.GetValueOrDefault("phases", "core,pickups,keys,enemies,npcmove,bosses,teleport,cutscenes,talk,cheats,abilities,loadstorm,fourmaps").Split(',').ToHashSet();
             var A = StartBot("A", party, port, scene, dolphin, work);
             var B = StartBot("B", party, port, scene, dolphin, work);
             bots.Add(A); bots.Add(B);

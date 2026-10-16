@@ -157,6 +157,7 @@ public sealed class ServerHost : IDisposable
             case "pay": Pay(p, o); break;
             case "plog": PlayerLog(p, o); break;
             case "inv": Inventory(p, o); break;
+            case "cheat": Cheat(p, o); break;
             case "ping":
                 var pong = Proto.Msg("pong"); pong["ts"] = o["ts"]?.DeepClone(); p.Conn.Send(pong);
                 break;
@@ -325,7 +326,29 @@ public sealed class ServerHost : IDisposable
     public void CountSpatula(Party party, ObjState st)
     {
         if (st.Kind != ObjState.KindSpatula || !st.PickupCollected || !party.FirstSpatula(st.Scene, st.Id)) return;
-        party.World.AddCounter(1, 1);
+        AddSpatulas(party, 1);
+        Log($"{party.Name}: spatula {st.Id:X8} in {PlayerState.SceneName(st.Scene)} -> {party.World.GetCounter(1)} spatulas");
+    }
+
+    /// <summary>
+    /// The game's "+10 spatulas" cheat (pause, hold L+R, X Y Y X X Y Y X): the cheater's launcher
+    /// reports it and the whole party gets the spatulas, like every other counter (max 100).
+    /// </summary>
+    void Cheat(Player p, JsonObject o)
+    {
+        var party = p.Party;
+        if (party == null) return;
+        int add = Math.Clamp(o["spat"]?.GetValue<int>() ?? 0, 0, 10);
+        uint have = party.World.GetCounter(1);
+        add = (int)Math.Min(add, 100 - Math.Min(100u, have));
+        if (add <= 0) return;
+        AddSpatulas(party, add);
+        Log($"{party.Name}: {p.Name} used the spatula cheat -> {party.World.GetCounter(1)} spatulas");
+    }
+
+    void AddSpatulas(Party party, int add)
+    {
+        party.World.AddCounter(1, add);
         uint n = party.World.GetCounter(1);
         var m = Proto.Msg("spat"); m["n"] = n;
         string line = m.ToJsonString();
@@ -333,10 +356,9 @@ public sealed class ServerHost : IDisposable
         lock (gate) members = party.Members.ToList();
         foreach (var mem in members)
         {
-            if (mem.Baseline != null && mem.Baseline.TryGetValue(PlyrSlot.Tag, out var bp)) World.AddCounter(bp, 1, 1);
+            if (mem.Baseline != null && mem.Baseline.TryGetValue(PlyrSlot.Tag, out var bp)) World.AddCounter(bp, 1, add);
             mem.Conn.Send(line);
         }
-        Log($"{party.Name}: spatula {st.Id:X8} in {PlayerState.SceneName(st.Scene)} -> {n} spatulas");
     }
 
     /// <summary>Sends an object state to everyone in its scene except <paramref name="from"/>.</summary>

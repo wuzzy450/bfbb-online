@@ -729,10 +729,18 @@ public sealed class Session : IDisposable
         var now = DateTime.UtcNow;
         if (lastCounters == null || !joined)
         {
+            // a batch of teammates' changes handed to the game before the load is still waiting to be
+            // applied: let it land first (the party's values below already include it; setting them
+            // now let it be added on top: chaos test, party 75 -> game 85)
+            if (!link.CountersApplied) return;
             // new scene: the game may or may not have taken its counters from the imported save slot
             // (and may still overwrite them): set the party's values outright, then let them settle
             lastCounters = (uint[])cur.Clone();
             countersReset = link.ResetSeq;
+            // teammates' changes handed to the game after the pre-load flush aren't ours: they are
+            // already in the party's world (chaos test: a +1 in flight during a load was counted twice)
+            if (flushed != null)
+                foreach (var (i, d) in invApplied) if (i < flushed.Length) flushed[i] = (uint)Math.Max(0, (long)flushed[i] + d);
             invApplied.Clear();
             if (importedPlyr is { } pl && joined)
             {
@@ -741,6 +749,8 @@ public sealed class Session : IDisposable
                 for (int i = 0; i < map.Length && i < lastCounters.Length; i++)
                 {
                     uint party = SerialBits.GetValue(pl, map[i].bit, 4);
+                    if (Verbose && i < 3 && (cur[i] != party || (flushed != null && flushed[i] != party)))
+                        log($"inv: scene start counter {i}: game {cur[i]} party {party} flushed {(flushed != null ? flushed[i].ToString() : "-")} frames {link.Frames} applied {link.CountersApplied}");
                     // our game changed this after our last report (a level-end reward during the load):
                     // a change of ours, not something to overwrite
                     if (flushed != null && i != 1 && cur[i] != party && cur[i] != flushed[i])
@@ -771,7 +781,11 @@ public sealed class Session : IDisposable
             fixingCounters = false;
             if (invApplied.Count > 0)
             {
-                foreach (var (i, d) in invApplied) lastCounters[i] = (uint)Math.Max(0, (long)lastCounters[i] + d);
+                foreach (var (i, d) in invApplied)
+                {
+                    lastCounters[i] = (uint)Math.Max(0, (long)lastCounters[i] + d);
+                    if (flushed != null && i < flushed.Length) flushed[i] = (uint)Math.Max(0, (long)flushed[i] + d);
+                }
                 invApplied.Clear();
             }
             return;
@@ -793,6 +807,15 @@ public sealed class Session : IDisposable
         // spatulas: the server's count is the truth. Our game's own extra (it awarded itself one
         // through synced level logic) goes after a few seconds; the server's newer count right away
         if (partySpatulas is uint ps && ps != lastCounters[1]) { lastCounters[1] = ps; SetCounters(new[] { 1 }, "party spatulas"); return; }
+        // the "+10 spatulas" cheat (only works on the pause menu): the server adds them for the party
+        if (cur[1] > lastCounters[1] && cur[1] == Math.Min(100u, lastCounters[1] + 10) && link.Mem.ReadU32(0x803CB8A8) == GameModePause)
+        {
+            var m = Proto.Msg("cheat"); m["spat"] = (int)(cur[1] - lastCounters[1]); Send(m);
+            log($"cheat: +{cur[1] - lastCounters[1]} spatulas for the party");
+            lastCounters[1] = cur[1];
+            spatulaOffSince = null;
+            return;
+        }
         if (cur[1] != lastCounters[1])
         {
             if (cur[1] < lastCounters[1] || (spatulaOffSince is DateTime t0 && now - t0 > TimeSpan.FromSeconds(3)))
@@ -859,6 +882,7 @@ public sealed class Session : IDisposable
         if (Verbose || why != "settling") log($"inv: {why}: set {vals.Count} counters to the party's (shinies {lastCounters![0]}, spatulas {lastCounters[1]})");
     }
 
+    const uint GameModePause = 7;   // gGameMode (eGameMode_Pause): cheats are entered on the pause menu
     DateTime settleUntil;
     uint? partySpatulas;
     DateTime? spatulaOffSince;
