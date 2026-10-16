@@ -68,7 +68,7 @@ public sealed class MainForm : Form
         simRow.Controls.Add(hostSims);
         simRow.Controls.Add(new Label { Text = "max", AutoSize = true, Margin = new Padding(6, 6, 0, 0) });
         simRow.Controls.Add(maxSims);
-        left.Controls.Add(simRow);
+        // map simulation is always on when hosting; no need to show the option
         left.Controls.Add(hostInfo);
         left.Controls.Add(new Label { Height = 8 });
         left.Controls.Add(gameInfo);
@@ -110,7 +110,7 @@ public sealed class MainForm : Form
         port.Value = Math.Clamp(cfg.Port, 1, 65535);
         party.Text = cfg.Party;
         host.Checked = cfg.Host;
-        hostSims.Checked = cfg.HostSims;
+        hostSims.Checked = true;
         hostUpnp.Checked = cfg.HostUpnp;
         watchAlong.Checked = cfg.WatchAlong;
         // which monitor the game opens on
@@ -178,6 +178,16 @@ public sealed class MainForm : Form
         var ips = LanAddresses();
         hostInfo.Text = $"Friends on your network connect to {string.Join(" or ", ips.DefaultIfEmpty("this PC's address"))}, port {port.Value}. "
             + $"Over the internet: the UPnP box opens TCP {port.Value} on your router (or forward it by hand) and the log shows your public address (or use Tailscale/ZeroTier).";
+    }
+
+    /// <summary>As many map sims as this PC can run alongside your own game
+    /// (each sim ≈ 20% of a core and ≈ 500 MB; keep 2 cores and 4 GB for you).</summary>
+    static int AutoMaxSims()
+    {
+        long ramMb = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024);
+        int byRam = (int)((ramMb - 4096) / 500);
+        int byCpu = (Environment.ProcessorCount - 2) * 5;
+        return Math.Clamp(Math.Min(byRam, byCpu), 1, 64);
     }
 
     static List<string> LanAddresses()
@@ -277,8 +287,8 @@ public sealed class MainForm : Form
                         DataDir = Path.Combine(data, "worlds"),
                         Sims = new SimOptions
                         {
-                            Enabled = cfg.HostSims,
-                            MaxSims = cfg.HostMaxSims,
+                            Enabled = true,
+                            MaxSims = AutoMaxSims(),
                             DolphinPath = dolphin,
                             GameDol = Installer.GameDol,
                             WorkDir = Path.Combine(data, "sims"),
