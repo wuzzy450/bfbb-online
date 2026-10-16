@@ -6,8 +6,9 @@ Host (the PC that runs the server):
 2. Tick **Host the server on this PC** and **Open the port on my router (UPnP)**, press Play.
 3. Read the log:
    - `router port 25599 opened (UPnP) ... friends connect to <ip>:25599`: give friends that ip.
-   - `UPnP failed` / `no UPnP router answered`: forward **TCP 25599** to this PC in the router's
-     web page (port forwarding / virtual server), and look up the public IP (e.g. whatismyip.com).
+   - `UPnP failed` / `no UPnP router answered`: forward the port by hand (see
+     [Forwarding the port by hand](#forwarding-the-port-by-hand) below), or skip routers and use
+     Tailscale.
 4. Windows Firewall asks about `BFBB-Online.exe`: allow it on **private and public** networks.
    If you clicked it away: Windows Security > Firewall > Allow an app > BFBB-Online.
 
@@ -34,6 +35,25 @@ If the friend can't connect:
 - Carrier-grade NAT (some mobile / fiber ISPs): port forwarding can't work; use Tailscale or
   ZeroTier (both free), then connect to the host's address on that virtual network.
 - Both must use the same BFBB Online build (the server says so if the versions differ).
+
+## Forwarding the port by hand
+
+Only needed when the log says UPnP failed.
+
+1. Open your router's page: type `192.168.1.1` or `192.168.0.1` in a browser (the exact address and
+   login are usually on a sticker on the router).
+2. Find **Port Forwarding** (some routers call it **Virtual Server**, **NAT** or **Applications**).
+3. Add a rule: protocol **TCP**, port **25599** (external and internal), sent to this PC's local
+   address (the one the launcher shows for same-house play, like `192.168.1.23`). Save.
+4. Press Play again and give friends your public IP with `:25599` on the end.
+
+Every router looks different: [portforward.com](https://portforward.com/router.htm) has
+step-by-step guides by router brand and model.
+
+**No router access, or it still won't work?** Use [Tailscale](https://tailscale.com/) (free).
+Everyone installs it and signs in to the same Tailscale network (the host invites friends), then
+friends use the host's Tailscale address (`100.x.y.z`) as **Server**. Nothing to set up on the router,
+and your real IP is never shared.
 
 Lag: the game runs locally for each player; teammates and enemies driven by another PC are
 ~1 round trip behind. Up to ~150 ms ping plays fine.
