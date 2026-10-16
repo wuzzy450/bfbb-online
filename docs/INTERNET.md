@@ -15,7 +15,9 @@ Friend:
 
 1. Same zip, same Deluxe 1.1 game (Heavy Mod Manager > Launch Game once).
 2. **Server** = the host's public IP (or Tailscale/ZeroTier/Radmin address), port 25599, the same
-   **Party** name as the host. Untick Host. Press Play.
+   **Party** name as the host. Untick Host. Press Play. The host finds their public IP as the
+   **IPv4** number on https://whatismyipaddress.com/ and should only send it privately to people
+   they trust (it shows roughly where they live).
 3. The party list shows both names and where each of you is.
 
 Quick checks once both are in:

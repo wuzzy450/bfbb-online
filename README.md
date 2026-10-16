@@ -40,7 +40,13 @@ links in its window to point at them.
 2. Tick **Host the server on this PC** and press **Play**.
 3. The launcher shows an address. Send it to your friends:
    - same house or Wi-Fi: your local address
-   - over the internet: the address the log shows (`friends connect to 203.0.113.7:25599`)
+   - over the internet: your public IP address plus `:25599`. To find it, open
+     [whatismyipaddress.com](https://whatismyipaddress.com/), wait for the **IPv4** box to load,
+     and send your friends that number with `:25599` on the end (it looks like `12.34.56.78:25599`, with your own numbers).
+     The launcher's log also prints it once the router port opens (`friends connect to ...`).
+
+   > Your public IP shows roughly where you live. Only send it to people you know and trust,
+   > in a private message, never in a public chat, stream or video.
 
 **Friends:**
 
@@ -79,7 +85,8 @@ the next time their game loads a level.
 
 The host's launcher has **Open the port on my router (UPnP)** ticked by default: it asks the
 router to forward **TCP 25599** and the log shows the address to give friends. If the log says
-UPnP failed, forward **TCP 25599** to the host PC by hand and give friends your public IP. No
+UPnP failed, forward **TCP 25599** to the host PC by hand and give friends your public IP (the
+**IPv4** number on [whatismyipaddress.com](https://whatismyipaddress.com/); share it privately). No
 router access? Use Tailscale, ZeroTier or Radmin VPN and connect to the host's address on that
 network. First-session checklist: [docs/INTERNET.md](docs/INTERNET.md).
 
