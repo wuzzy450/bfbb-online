@@ -80,46 +80,6 @@ public sealed class Session : IDisposable
     }
     readonly Timer logTimer;
 
-    // ---- game window on the chosen monitor ---------------------------------------------------
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool EnumWindows(EnumWinProc cb, IntPtr l);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WinRect r);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
-    delegate bool EnumWinProc(IntPtr h, IntPtr l);
-    struct WinRect { public int Left, Top, Right, Bottom; }
-
-    /// <summary>
-    /// Moves Dolphin's windows onto the chosen screen once they appear (Dolphin restores its own
-    /// saved window position, so its config alone isn't enough). Keeps each window's size.
-    /// </summary>
-    static void MoveGameWindow(Process p, System.Windows.Forms.Screen screen)
-    {
-        var area = screen.WorkingArea;
-        new Thread(() =>
-        {
-            var moved = new HashSet<IntPtr>();
-            var until = DateTime.UtcNow.AddSeconds(40);
-            while (DateTime.UtcNow < until && !p.HasExited)
-            {
-                EnumWindows((h, _) =>
-                {
-                    GetWindowThreadProcessId(h, out uint pid);
-                    if (pid != (uint)p.Id || !IsWindowVisible(h) || GetWindow(h, 4) != IntPtr.Zero || moved.Contains(h)) return true;   // 4 = GW_OWNER: skip popups
-                    if (!GetWindowRect(h, out var r) || r.Right - r.Left < 200) return true;
-                    int w = Math.Min(r.Right - r.Left, area.Width), hgt = Math.Min(r.Bottom - r.Top, area.Height);
-                    int x = area.X + (area.Width - w) / 2, y = area.Y + (area.Height - hgt) / 2;
-                    if (!area.Contains(r.Left + (r.Right - r.Left) / 2, r.Top + (r.Bottom - r.Top) / 2))
-                        SetWindowPos(h, IntPtr.Zero, x, y, w, hgt, 0x0004 | 0x0010);   // NOZORDER | NOACTIVATE
-                    moved.Add(h);
-                    return true;
-                }, IntPtr.Zero);
-                Thread.Sleep(500);
-            }
-        }) { IsBackground = true, Name = "move game window" }.Start();
-    }
-
     // ---- logs for the host ----------------------------------------------------------------
     readonly Queue<string> remoteLog = new();
     void QueueRemoteLog(string s)
@@ -262,6 +222,9 @@ public sealed class Session : IDisposable
                 OnPeerState(o);
                 break;
             case "world":
+                // teammates' changes queued so far are in this world; later ones (the server applied
+                // them after building it) still have to be applied
+                lock (invIn) invInAtWorld = invIn.Count;
                 pendingWorld?.TrySetResult(o);
                 break;
             case "obj":
@@ -409,16 +372,10 @@ public sealed class Session : IDisposable
                 psi.ArgumentList.Add(a);
         }
         // the game window on the chosen monitor (fullscreen also goes to the monitor the window is on)
-        var screen = System.Windows.Forms.Screen.AllScreens.FirstOrDefault(s => s.DeviceName == cfg.Monitor);
-        if (screen != null)
-        {
-            var b = screen.WorkingArea;
-            foreach (var a in new[] { "-C", $"Dolphin.Display.RenderWindowXPos={b.X + 40}", "-C", $"Dolphin.Display.RenderWindowYPos={b.Y + 40}",
-                                      "-C", "Dolphin.Interface.RenderToMain=False" })
-                psi.ArgumentList.Add(a);
-        }
+        var screen = GameScreen.Resolve(cfg);
+        if (screen != null) foreach (var a in GameScreen.DolphinArgs(screen)) psi.ArgumentList.Add(a);
         dolphin = Process.Start(psi) ?? throw new InvalidOperationException("could not start Dolphin");
-        if (screen != null) MoveGameWindow(dolphin, screen);
+        if (screen != null) GameScreen.MoveWindows(dolphin, screen);
         log("started Dolphin");
         gameThread = new Thread(GameLoop) { IsBackground = true, Name = "game link" };
         gameThread.Start();
@@ -515,6 +472,7 @@ public sealed class Session : IDisposable
                 if (baseline == null || !baseline.TryGetValue(tag, out var bas) || !bas.AsSpan().SequenceEqual(b))
                     up[tag] = b;
             var tcs = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (invIn) invInAtWorld = int.MaxValue;   // (no world yet: everything queued counts)
             pendingWorld = tcs;
             var m = Proto.Msg("load");
             m["seq"] = ++loadCounter;
@@ -534,7 +492,9 @@ public sealed class Session : IDisposable
             {
                 baseline = world;
                 importedPlyr = world.TryGetValue(PlyrSlot.Tag, out var ip) ? ip : null;
-                lock (invIn) invIn.Clear();   // the party's changes so far are in this world
+                // only the changes that came before the world are in it (chaos test: a +5 relayed
+                // while the import ran was dropped, that game stayed 5 behind)
+                lock (invIn) invIn.RemoveRange(0, Math.Min(invInAtWorld, invIn.Count));
             }
             log($"{PlayerState.SceneName(scene)}: synced party progress ({up.Count} changes up, {world.Count} slots down)");
         }
@@ -727,6 +687,9 @@ public sealed class Session : IDisposable
     {
         var cur = link!.ReadCounters();
         var now = DateTime.UtcNow;
+        // seen on the pause menu (cheats): noted every tick, the cheat check below may only run after
+        // teammates' changes landed, when the player has already left the menu
+        if (link.Mem.ReadU32(0x803CB8A8) == GameModePause) lastPaused = now;
         if (lastCounters == null || !joined)
         {
             // a batch of teammates' changes handed to the game before the load is still waiting to be
@@ -808,7 +771,7 @@ public sealed class Session : IDisposable
         // through synced level logic) goes after a few seconds; the server's newer count right away
         if (partySpatulas is uint ps && ps != lastCounters[1]) { lastCounters[1] = ps; SetCounters(new[] { 1 }, "party spatulas"); return; }
         // the "+10 spatulas" cheat (only works on the pause menu): the server adds them for the party
-        if (cur[1] > lastCounters[1] && cur[1] == Math.Min(100u, lastCounters[1] + 10) && link.Mem.ReadU32(0x803CB8A8) == GameModePause)
+        if (cur[1] > lastCounters[1] && cur[1] == Math.Min(100u, lastCounters[1] + 10) && now - lastPaused < TimeSpan.FromSeconds(5))
         {
             var m = Proto.Msg("cheat"); m["spat"] = (int)(cur[1] - lastCounters[1]); Send(m);
             log($"cheat: +{cur[1] - lastCounters[1]} spatulas for the party");
@@ -882,7 +845,9 @@ public sealed class Session : IDisposable
         if (Verbose || why != "settling") log($"inv: {why}: set {vals.Count} counters to the party's (shinies {lastCounters![0]}, spatulas {lastCounters[1]})");
     }
 
-    const uint GameModePause = 7;   // gGameMode (eGameMode_Pause): cheats are entered on the pause menu
+    const uint GameModePause = 7;
+    int invInAtWorld;   // invIn entries already counted in the world the server just sent
+    DateTime lastPaused = DateTime.MinValue;   // gGameMode (eGameMode_Pause): cheats are entered on the pause menu
     DateTime settleUntil;
     uint? partySpatulas;
     DateTime? spatulaOffSince;

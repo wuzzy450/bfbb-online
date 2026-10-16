@@ -115,6 +115,7 @@ void iEnvEndRenderFX(void* env);
 void xSerial_setClient(void* xs, u32 idtag);
 void* zSceneFindObject(u32 id);
 void zEntEvent(void* to, u32 event);
+void zGameStateSwitchEvent(s32 event);
 void zEntPlayerControlOn(u32 owner);
 void zEntPickup_CheckAllPickupsAgainstPlayer(void* scene, f32 dt);
 void ztalkbox_start_talk(void* box, const char* text, void* cb, void* npc);

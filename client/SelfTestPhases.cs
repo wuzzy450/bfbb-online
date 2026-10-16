@@ -54,6 +54,8 @@ static partial class SelfTest
         Phase("heapcmp", () => HeapCmp(bots, a.GetValueOrDefault("tpscenes", "B101,JF01").Split(',')));
         Phase("teleport", () => TeleportPhase(bots, a.GetValueOrDefault("tpscenes", "JF01,B101").Split(',')));
         Phase("cheats", () => CheatsPhase(bots));
+        Phase("tbox", () => TboxPhase(bots));
+        Phase("pay", () => PayPhase(bots, a.GetValueOrDefault("payscene", "SM01,HB01")));
         Phase("abilities", () => AbilitiesPhase(bots, a));
         Phase("loadstorm", () => LoadStormPhase(bots, a));
         Phase("racediag", () => RaceDiag(bots, a.GetValueOrDefault("raceobj", "GOLDENSPAT_PICKUP_02")));
@@ -297,6 +299,26 @@ static partial class SelfTest
 
     // ---- helpers ---------------------------------------------------------------------------
     static string SN(uint s) => PlayerState.SceneName(s);
+
+    /// <summary>Diagnostics: RenderWare resource arena entries by where their owner lives.</summary>
+    static string ArenaDump(GameLink L)
+    {
+        uint g = L.Mem.ReadU32(0x803CC87C) + L.Mem.ReadU32(0x803CC848);
+        var counts = new SortedDictionary<string, int>();
+        int total = 0;
+        foreach (uint off in new uint[] { 0x10, 0x18 })
+        {
+            uint head = g + off, e = L.Mem.ReadU32(head);
+            for (int k = 0; e != head && e >= 0x80000000 && k < 20000; k++)
+            {
+                uint owner = L.Mem.ReadU32(e + 0xC), rf = L.Mem.ReadU32(e + 0x10);
+                string key = $"list{off:X} owner {owner >> 20:X3}xxxxx ref {rf >> 20:X3}xxxxx";
+                counts[key] = counts.GetValueOrDefault(key) + 1; total++;
+                e = L.Mem.ReadU32(e);
+            }
+        }
+        return $"g {g:X8}, {total} entries: " + string.Join(", ", counts.Select(kv => $"{kv.Key} x{kv.Value}"));
+    }
 
     static uint SceneOf(Bot b) => b.L.TryReadLocal(out var me) ? me.SceneId : 0;
 

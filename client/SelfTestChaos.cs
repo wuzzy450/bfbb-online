@@ -176,6 +176,7 @@ static partial class SelfTest
                 }
                 if (me.ControlOff != 0) WaitControl(b, TimeSpan.FromSeconds(10));
                 uint shiny0 = b.L.ReadCounters()[0], pay0 = b.L.PaySeq;
+                long payAny0 = Interlocked.Read(ref payEpoch);
                 string act = ChaosAction(b, rng, st);
                 lock (st) st.Actions++;
                 if (act == StuckPause)
@@ -191,7 +192,9 @@ static partial class SelfTest
                 if (c[1] < lastSpat) Issue($"spatulas went down {lastSpat} -> {c[1]} in {SN(scene)} after '{act}'");
                 if (c[2] < lastSock) Issue($"socks went down {lastSock} -> {c[2]} in {SN(scene)} after '{act}'");
                 lastSpat = Math.Max(lastSpat, c[1]); lastSock = Math.Max(lastSock, c[2]);
-                if (c[0] + 200 < shiny0 && b.L.PaySeq == pay0 && act != "pay")
+                // shinies are shared: a teammate paying (during this action or just before) lowers ours too
+                bool anyPay = Interlocked.Read(ref payEpoch) != payAny0 || Interlocked.Read(ref paying) > 0 || DateTime.UtcNow.Ticks < Interlocked.Read(ref payQuietUntil);
+                if (c[0] + 200 < shiny0 && b.L.PaySeq == pay0 && act != "pay" && !anyPay)
                     Issue($"shinies dropped {shiny0} -> {c[0]} with no payment in {SN(scene)} after '{act}'");
                 lock (st) { st.MaxSpat = lastSpat; st.MaxSock = lastSock; }
             }
@@ -352,9 +355,19 @@ static partial class SelfTest
     }
     static bool cheatDiag;
 
-    /// <summary>Leaves the pause menu (gGameMode 7): Start, then B, then A on the top entry (resume).</summary>
+    /// <summary>
+    /// Leaves the pause menu (gGameMode 7). Bot pad taps don't reliably reach the menu's resume entry,
+    /// so the patch runs the same dispatcher event it sends (SetGameState_Play); taps are the fallback.
+    /// </summary>
     static bool Unpause(GameLink L)
     {
+        for (int k = 0; k < 3 && L.Mem.ReadU32(0x803CB8A8) == 7; k++)
+        {
+            L.Resume();
+            for (int w = 0; w < 20 && L.Mem.ReadU32(0x803CB8A8) == 7; w++) Thread.Sleep(100);
+        }
+        if (L.Mem.ReadU32(0x803CB8A8) != 7) return true;
+        Log("resume event didn't leave the pause menu, trying pad taps");
         uint[] tries = { GcStart, GcB, GcA, GcX, GcY, GcStart, GcB, GcA, GcX, GcY, GcStart, GcA, GcStart, GcB, GcA };
         for (int k = 0; k < tries.Length; k++)
         {
@@ -445,12 +458,15 @@ static partial class SelfTest
     /// Spending: an object whose link gives the player a negative number of shinies (shiny door,
     /// clam bridge, Mr. Krabs) is visited and interacted with (X, then A to confirm).
     /// </summary>
-    static bool ChaosPay(Bot b, Random rng)
+    /// <summary>
+    /// Paying objects in the current scene: talk boxes whose answer (TalkBox_OnYes 453, Mr. Krabs'
+    /// OnSignal1 343...) sends GiveShinyObjects (53) with a negative amount. They have no position
+    /// (reached through triggers/conditions), so a bot starts their conversation directly.
+    /// </summary>
+    static List<(uint id, uint ev, int price)> FindPayers(GameLink L)
     {
-        var L = b.L;
-        var objs = L.SceneObjects();
-        var payers = new List<(float x, float y, float z, uint id)>();
-        foreach (var o in objs)
+        var r = new List<(uint, uint, int)>();
+        foreach (var o in L.SceneObjects())
         {
             uint ptr = L.ObjPtr(o.index);
             if (ptr == 0) continue;
@@ -459,24 +475,165 @@ static partial class SelfTest
             if (n == 0 || n > 64 || lk < 0x80000000) continue;
             var d = L.Mem.Read(lk, n * 0x20);
             for (int i = 0; i < n; i++)
-                if (BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(i * 0x20 + 2)) == EvtGiveShiny && BinaryPrimitives.ReadSingleBigEndian(d.AsSpan(i * 0x20 + 8)) < 0)
+            {
+                float amt = BinaryPrimitives.ReadSingleBigEndian(d.AsSpan(i * 0x20 + 8));
+                if (BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(i * 0x20 + 2)) == EvtGiveShiny && amt < 0)
                 {
-                    // the payer itself if it has a position, else whatever it is linked from with one
-                    var at = (o.x != 0 || o.z != 0) ? o : objs.FirstOrDefault(s => (s.x != 0 || s.z != 0) && L.Links(s.index).Any(x => x.target == o.id));
-                    if (at.x != 0 || at.z != 0) payers.Add((at.x, at.y, at.z, o.id));
+                    r.Add((o.id, BinaryPrimitives.ReadUInt16BigEndian(d.AsSpan(i * 0x20)), (int)-amt));
                     break;
                 }
+            }
         }
-        if (payers.Count == 0) return false;
-        var p = payers[rng.Next(payers.Count)];
+        return r;
+    }
+
+    /// <summary>Starts a payer's conversation and answers it; true once the patch reported a payment.</summary>
+    static bool PayAt(Bot b, (uint id, uint ev, int price) p)
+    {
+        var L = b.L;
+        if (L.ReadCounters()[0] < p.price + 100 && !EnterCheat(L, "YXXYYXXY")) return false;   // +1000 shinies
+        for (int k = 0; k < 40 && L.ReadCounters()[0] < p.price + 100; k++)
+        {
+            if (k % 8 == 7 && !EnterCheat(L, "YXXYYXXY")) return false;
+            Thread.Sleep(250);
+        }
+        WaitControl(b, TimeSpan.FromSeconds(10));
+        Interlocked.Increment(ref payEpoch); Interlocked.Increment(ref paying);
+        try { return PayTalk(b, p); }
+        finally { Interlocked.Decrement(ref paying); Interlocked.Increment(ref payEpoch); Interlocked.Exchange(ref payQuietUntil, DateTime.UtcNow.AddSeconds(5).Ticks); }
+    }
+
+    /// <summary>Payments by any bot (bumped at start and end) and when their effect has surely arrived everywhere.</summary>
+    static long payEpoch, payQuietUntil, paying;
+
+    static bool PayTalk(Bot b, (uint id, uint ev, int price) p)
+    {
+        var L = b.L;
         uint pay0 = L.PaySeq, sh0 = L.ReadCounters()[0];
-        L.Teleport(p.x + 1.0f, p.y + 0.5f, p.z + 1.0f);
-        Thread.Sleep(700);
-        for (int k = 0; k < 6; k++) { Tap(L, k < 2 ? GcX : GcA, 150); Thread.Sleep(500); }
+        // what starts it in the game (a condition behind the door's trigger) carries the text: fire that link
+        var objs = L.SceneObjects();
+        var starter = objs.SelectMany(o => L.Links(o.index).Where(l => l.dst == 335 && l.target == p.id).Select(l => (o.id, l.src))).FirstOrDefault();
+        if (starter.id == 0)
+        {
+            // Mr. Krabs: a counter starts the payer's task box, which runs the conversation
+            var payer = objs.FirstOrDefault(o => o.id == p.id);
+            var tasks = L.Links(payer.index).Select(l => l.target).Where(t => objs.Any(o => o.id == t && o.type == 0x35)).ToHashSet();
+            starter = objs.Where(o => o.id != p.id)
+                .SelectMany(o => L.Links(o.index).Where(l => l.dst == 335 && tasks.Contains(l.target)).Select(l => (o.id, l.src))).FirstOrDefault();
+        }
+        if (starter.id == 0) { Log($"{b.Name}: nothing starts {p.id:X8}"); return false; }
+        L.SendEvent(starter.id, starter.src);
+        Thread.Sleep(1500);
+        Log($"{b.Name}: {starter.id:X8} --{starter.src}--> talk {L.ActiveTalk():X8} control {(L.TryReadLocal(out var me0) ? me0.ControlOff : 0)}");
+        Shot(b, "pay-start");
+        // A through the text; the yes/no question starts on yes
+        for (int k = 0; k < 30 && L.PaySeq == pay0; k++) { Tap(L, GcA, 120); Thread.Sleep(600); if (k == 3 || k == 8) Shot(b, $"pay-{k}"); }
+        for (int k = 0; k < 15 && L.ActiveTalk() != 0; k++) { Tap(L, GcA, 120); Thread.Sleep(500); }
         WaitControl(b, TimeSpan.FromSeconds(10));
         bool paid = L.PaySeq != pay0;
-        if (paid) Log($"{b.Name}: paid at {p.id:X8}: shinies {sh0} -> {L.ReadCounters()[0]}");
+        Log($"{b.Name}: {(paid ? "paid" : "no payment")} at {p.id:X8} (event {p.ev}, price {p.price}): shinies {sh0} -> {L.ReadCounters()[0]}");
         return paid;
+    }
+
+    static bool ChaosPay(Bot b, Random rng)
+    {
+        // shiny doors and gates only: a bot starting Mr. Krabs' talk directly skips his "already
+        // bought" task state, so two bots would buy the same spatula (the `pay` phase covers him)
+        var objs = b.L.SceneObjects();
+        var payers = FindPayers(b.L).Where(p => !b.L.Links(objs.First(o => o.id == p.id).index).Any(l => l.dst == 35)).ToList();
+        return payers.Count > 0 && PayAt(b, payers[rng.Next(payers.Count)]);
+    }
+
+    /// <summary>
+    /// --phases tbox: A walks into a teleport box in JF01 and comes out of the other one; B, standing
+    /// elsewhere in the same level, must not be moved or lose control (playtest: a teammate's box use
+    /// took the other player along).
+    /// </summary>
+    static void TboxPhase(List<Bot> bots)
+    {
+        var A = bots[0]; var B = bots[1];
+        uint scene = PlayerState.SceneIdOf("JF01");
+        if (!GoTo(new List<Bot> { A, B }, scene)) return;
+        var objs = A.L.SceneObjects();
+        (float x, float y, float z) Pos(uint id)
+        {
+            var o = objs.FirstOrDefault(o => o.id == id);
+            uint ptr = o.id == 0 ? 0 : A.L.ObjPtr(o.index);
+            uint model = ptr == 0 ? 0 : A.L.Mem.ReadU32(ptr + 0x24);
+            uint mat = model < 0x80000000 ? 0 : A.L.Mem.ReadU32(model + 0x4C);
+            if (mat < 0x80000000) return (0, 0, 0);
+            var p = A.L.Mem.Read(mat + 0x30, 12);
+            return (BinaryPrimitives.ReadSingleBigEndian(p), BinaryPrimitives.ReadSingleBigEndian(p.AsSpan(4)), BinaryPrimitives.ReadSingleBigEndian(p.AsSpan(8)));
+        }
+        var b1 = Pos(0x9EF45781); var b2 = Pos(0x9EF45782);
+        if (b1 == (0, 0, 0) || b2 == (0, 0, 0)) { Result("teleport box", false, "TBOX_TELEPORT_01/02 not found in JF01"); return; }
+        static float D((float x, float y, float z) a, (float x, float y, float z) b) => MathF.Sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+        B.L.TryReadLocal(out var b0);
+        var bStart = (b0.X, b0.Y, b0.Z);
+        Log($"tbox: box1 {b1}, box2 {b2}, B at {bStart}");
+        // a box works once its target is open; a box opens when a player comes within ~3.4 units:
+        // visit the far one, then step next to and onto the near one
+        A.L.Teleport(b2.x + 2.5f, b2.y + 1f, b2.z);
+        Thread.Sleep(3000);
+        WaitControl(A, TimeSpan.FromSeconds(10));
+        A.L.Teleport(b1.x + 2.5f, b1.y + 1f, b1.z);
+        Thread.Sleep(2500);
+        A.L.Teleport(b1.x, b1.y + 1.5f, b1.z);
+        float bMove = 0; uint bCtl = 0;
+        bool arrived = WaitFor(() =>
+        {
+            if (B.L.TryReadLocal(out var bm)) { bMove = Math.Max(bMove, D((bm.X, bm.Y, bm.Z), bStart)); bCtl |= bm.ControlOff; }
+            return A.L.TryReadLocal(out var am) && D((am.X, am.Y, am.Z), b2) < 5f;
+        }, 20, 100);
+        WaitFor(() => { if (B.L.TryReadLocal(out var bm)) { bMove = Math.Max(bMove, D((bm.X, bm.Y, bm.Z), bStart)); bCtl |= bm.ControlOff; } return false; }, 4, 100);
+        A.L.TryReadLocal(out var a1);
+        Result("teleport box: user arrives", arrived, $"A at ({a1.X:F1},{a1.Y:F1},{a1.Z:F1}), other box at ({b2.x:F1},{b2.y:F1},{b2.z:F1})");
+        Result("teleport box: teammate stays", bMove < 1.5f && bCtl == 0, $"B moved at most {bMove:F2} units, control-off bits seen {bCtl:X}");
+        WaitControl(A, TimeSpan.FromSeconds(10));
+    }
+
+    /// <summary>
+    /// --phases pay [--payscene SM01]: A pays a shiny door; both games lose the price once (shared
+    /// inventory), B's game replays what the payment set off, and a late visitor gets it too.
+    /// </summary>
+    static void PayPhase(List<Bot> bots, string scenes)
+    {
+        foreach (var sc in scenes.Split(',', StringSplitOptions.RemoveEmptyEntries)) PayIn(bots, sc);
+    }
+
+    static void PayIn(List<Bot> bots, string sceneName)
+    {
+        var A = bots[0]; var B = bots[1];
+        uint scene = PlayerState.SceneIdOf(sceneName);
+        if (!GoTo(bots, scene)) return;
+        var payers = FindPayers(A.L);
+        Log($"pay: {payers.Count} payers in {sceneName}: {string.Join(", ", payers.Select(p => $"{p.id:X8}/{p.ev}/{p.price}"))}");
+        if (payers.Count == 0) { Result($"pay in {sceneName}", false, "no paying object found"); return; }
+        var p = payers.OrderBy(x => x.price).First();
+        uint bTail0 = B.L.Mem.ReadU32(GameLink.MailboxAddr + Mb.OPayInTail);
+        bool paid = PayAt(A, p);
+        if (!paid) { Result($"pay in {sceneName}", false, $"A answered {p.id:X8} but no payment was reported"); return; }
+        Thread.Sleep(1500);
+        uint a1 = A.L.ReadCounters()[0];
+        bool same = WaitFor(() => A.L.ReadCounters()[0] == B.L.ReadCounters()[0], 10, 250);
+        bool replayed = WaitFor(() => B.L.Mem.ReadU32(GameLink.MailboxAddr + Mb.OPayInTail) != bTail0, 15, 250);
+        Result($"pay in {sceneName}", same && replayed,
+            $"A paid {p.price} at {p.id:X8}: shinies A {a1}, B {B.L.ReadCounters()[0]}; B's game replayed the payment: {replayed}");
+        Thread.Sleep(3000);
+        // what the payer bought (a pickup the payment hands out with Pickup 35: Mr. Krabs' golden
+        // spatula) is the payer's own reward, shown only in their game
+        var all = A.L.SceneObjects();
+        var payerObj = all.FirstOrDefault(o => o.id == p.id);
+        var bought = A.L.Links(payerObj.index).Where(l => l.dst == 35).Select(l => l.target).ToHashSet();
+        Compare($"world after paying ({sceneName})", A, B, null, bought);
+        // a teammate entering later replays it too (stored per scene on the server)
+        uint park = PlayerState.SceneIdOf(sceneName == "HB01" ? "JF01" : "HB01");
+        var others = bots.Where(x => x != A).ToList();
+        if (!GoTo(others, park)) return;
+        uint bTail1 = B.L.Mem.ReadU32(GameLink.MailboxAddr + Mb.OPayInTail);
+        if (!GoTo(others, scene)) return;
+        bool again = WaitFor(() => B.L.Mem.ReadU32(GameLink.MailboxAddr + Mb.OPayInTail) != bTail1, 15, 250);
+        Result($"pay replayed on re-entry ({sceneName})", again, $"B came back to {sceneName}: payment replayed {again}, shinies A {A.L.ReadCounters()[0]} B {B.L.ReadCounters()[0]}");
     }
 
     /// <summary>Teammates in the same level must see the same collected/broken objects.</summary>
@@ -527,6 +684,8 @@ static partial class SelfTest
         ulong pcMin = PcFreeMb();
         uint gapMin = uint.MaxValue, osMin = uint.MaxValue, largestMin = uint.MaxValue;
         string gapAt = "", osAt = "";
+        bool allHigh = true;
+        uint shrinkMax = 0; string shrinkAt = "";
         var rng = new Random(7);
         for (int r = 0; r < rounds; r++)
         {
@@ -538,6 +697,7 @@ static partial class SelfTest
             for (int i = 0; i < group.Count; i++) if (SceneOf(group[i]) != targets[i]) group[i].L.Warp(targets[i], anytime: true);
             var until = DateTime.UtcNow.AddSeconds(120);
             var arrived = new bool[group.Count];
+            var firstGap = new uint[group.Count];
             while (DateTime.UtcNow < until && !arrived.All(x => x))
             {
                 Thread.Sleep(300);
@@ -552,6 +712,9 @@ static partial class SelfTest
                         if (b.L.TryReadLocal(out var me) && me.InGame && me.SceneId == targets[i])
                         {
                             uint gap = b.L.HeapGap; var os = b.L.OsHeapFree();
+                            allHigh &= b.L.HighRam;
+                            if (firstGap[i] == 0) firstGap[i] = gap;
+                            else if (firstGap[i] > gap && firstGap[i] - gap > shrinkMax) { shrinkMax = firstGap[i] - gap; shrinkAt = $"{b.Name} in {SN(targets[i])}"; }
                             if (gap < gapMin) { gapMin = gap; gapAt = $"{b.Name} in {SN(targets[i])}"; }
                             if (os.free < osMin) { osMin = os.free; osAt = $"{b.Name} in {SN(targets[i])}"; }
                             largestMin = Math.Min(largestMin, os.largest);
@@ -569,9 +732,12 @@ static partial class SelfTest
             if (bad.Count > 0) foreach (var b in bad.Where(b => b.S.Link != null)) Log($"{b.Name}: " + SafeCpu(b));
             Thread.Sleep(2000);
         }
-        // the patch keeps mb.heapReserve (24 KB) free; under that a puppet would have failed to build
-        Result("load storm: memory", gapMin >= 24 * 1024 && largestMin >= 64 * 1024 && pcMin >= 512,
-            $"lowest scene heap gap {gapMin / 1024} KB ({gapAt}), lowest OS heap free {osMin / 1024} KB ({osAt}), smallest largest OS block {largestMin / 1024} KB, lowest PC free RAM {pcMin} MB with {group.Count} games");
+        // Low-RAM puppets need mb.heapReserve (24 KB) left; with high RAM they don't touch the scene heap
+        // and the gap is the level's own (SM04 leaves 19 KB with 1 or 5 puppets, stock layout). Either
+        // way the gap must not shrink while a level runs (gxHeap[0]/[1] would meet = session-4 crash).
+        uint gapBar = allHigh ? 8 * 1024u : 24 * 1024u;
+        Result("load storm: memory", gapMin >= gapBar && shrinkMax < 4096 && largestMin >= 64 * 1024 && pcMin >= 512,
+            $"lowest scene heap gap {gapMin / 1024} KB ({gapAt}, bar {gapBar / 1024} KB{(allHigh ? ", puppets in high RAM" : "")}), most shrink during a visit {shrinkMax / 1024} KB {shrinkAt}, lowest OS heap free {osMin / 1024} KB ({osAt}), smallest largest OS block {largestMin / 1024} KB, lowest PC free RAM {pcMin} MB with {group.Count} games");
     }
 
     /// <summary>

@@ -420,6 +420,9 @@ public sealed class GameLink : IDisposable
         W(Mb.OEvtSeq, U(Mb.OEvtSeq) + 1);
     }
 
+    /// <summary>Test hook: leaves the pause menu like its resume entry (dispatcher SetGameState_Play).</summary>
+    public void Resume() => SendEvent(0, 159);
+
     public bool EventDone => U(Mb.OEvtSeq) == U(Mb.OEvtAck);
 
     /// <summary>mb.dbgRender[i] (diagnostics, see mailbox.h).</summary>

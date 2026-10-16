@@ -717,8 +717,14 @@ s32 bbol_pad_update(s32 idx, f32 dt)
     if (bridged() && (mb.flags & MBF_WARP_ANYTIME) && AT(u32, GGAMEMODE) == 12) handle_warp();
     if (bridged() && idx == 0 && mb.evtSeq != mb.evtAck && AT(u32, GLOBALS + G_SCENECUR)) {
         mb.evtAck = mb.evtSeq;
-        void* o = zSceneFindObject(mb.evtId);
-        if (o) zEntEvent(o, mb.evtCode);
+        if (mb.evtId == 0) {
+            // id 0: a game state event, as a dispatcher would run it (159 SetGameState_Play = the
+            // pause menu's resume; only those, so a launcher can't switch to anything else)
+            if (mb.evtCode == 159 && AT(u32, GGAMEMODE) == 7) zGameStateSwitchEvent(mb.evtCode);
+        } else {
+            void* o = zSceneFindObject(mb.evtId);
+            if (o) zEntEvent(o, mb.evtCode);
+        }
     }
     if (idx == 0 && bridged() && mb.padOverride) {
         u8* pad = (u8*)MPAD;

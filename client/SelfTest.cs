@@ -123,6 +123,7 @@ static partial class SelfTest
                     Log("  " + DvdState(l));
                     Log($"  OS heap free {l.OsHeapFree().free / 1024} KB, largest {l.OsHeapFree().largest / 1024} KB, added {l.Mem.ReadU32(GameLink.MailboxAddr + Mb.OOsHeapAdded) / 1024} KB");
                     Log($"  GX tokens: last read {l.Mem.Read(0x803CC940, 2)[0] * 256 + l.Mem.Read(0x803CC940, 2)[1]:X4}, issued {l.Mem.Read(0x803CB130, 2)[0] * 256 + l.Mem.Read(0x803CB130, 2)[1]:X4}");
+                    try { Log($"  RW resource arena: {ArenaDump(l)}"); } catch (Exception e) { Log($"  RW resource arena unreadable: {e.Message}"); }
                     for (int k = 0; k < 4; k++) { Log("  " + CpuSample(l)); Thread.Sleep(150); }
                     Log("  " + RwDirty(l) + " | stage heads exit-before/exit-after/setup-before/setup-after/frame, -, rootless LR/count/frame: " + string.Join(" ", Enumerable.Range(10, 19).Select(k => l.Mem.ReadU32(GameLink.MailboxAddr + Mb.ODbgRender + 4 * (uint)k).ToString("X8"))));
                 }
@@ -139,6 +140,27 @@ static partial class SelfTest
     {
         var line = $"{DateTime.Now:HH:mm:ss.fff} {s}";
         lock (report) { logw?.WriteLine(line); Console.WriteLine(line); }
+    }
+
+    /// <summary>Paid doors survive a server restart: World saves its payments and loads them back.</summary>
+    static void CheckPaysPersist()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bbol-pays-{Environment.ProcessId}.json");
+        try
+        {
+            var w = new World(path);
+            w.AddPay(PlayerState.SceneIdOf("BB02"), 0x1234ABCD, 53);
+            w.AddPay(PlayerState.SceneIdOf("GL01"), 0xDEADBEEF, 10);
+            bool dup = !w.AddPay(PlayerState.SceneIdOf("GL01"), 0xDEADBEEF, 10);
+            w.Save();
+            var r = new World(path); r.Load();
+            var got = r.AllPays().OrderBy(x => x.id).ToList();
+            bool ok = dup && got.Count == 2 && got[0] == (PlayerState.SceneIdOf("BB02"), 0x1234ABCDu, 53u)
+                && got[1] == (PlayerState.SceneIdOf("GL01"), 0xDEADBEEFu, 10u);
+            Result("payments persist", ok, $"saved 2, loaded {got.Count}: {string.Join(", ", got.Select(x => $"{PlayerState.SceneName(x.scene)} {x.id:X8}:{x.ev}"))}");
+        }
+        catch (Exception e) { Result("payments persist", false, e.Message); }
+        finally { try { File.Delete(path); } catch { } }
     }
 
     static void Result(string name, bool ok, string detail)
@@ -165,6 +187,7 @@ static partial class SelfTest
         var deluxe = Installer.FindDeluxe(a.GetValueOrDefault("deluxe"), dolphin);
         if (dolphin == null || deluxe == null) { Log("Dolphin or Deluxe not found"); return 2; }
         Installer.Install(deluxe, Log);
+        if (a.ContainsKey("monitors")) { visible = "M"; MonitorTest(dolphin, work, a); return Finish(new List<Bot>(), a); }
 
         var data = Path.Combine(work, "server-data");
         if (Directory.Exists(data)) Directory.Delete(data, true);
@@ -261,7 +284,7 @@ static partial class SelfTest
         }
         try
         {
-            var phases = a.GetValueOrDefault("phases", "core,pickups,keys,enemies,npcmove,bosses,teleport,cutscenes,talk,cheats,abilities,loadstorm,fourmaps").Split(',').ToHashSet();
+            var phases = a.GetValueOrDefault("phases", "core,pickups,keys,enemies,npcmove,bosses,teleport,cutscenes,talk,cheats,pay,tbox,abilities,loadstorm,fourmaps").Split(',').ToHashSet();
             var A = StartBot("A", party, port, scene, dolphin, work);
             var B = StartBot("B", party, port, scene, dolphin, work);
             bots.Add(A); bots.Add(B);
@@ -334,6 +357,7 @@ static partial class SelfTest
                 Compare("consistency (after coming back)", A, B, null);
             }
             else Result("return to level", false, Describe(bots));
+            CheckPaysPersist();
 
             // 8a. the PLYR save slot decodes to the live counters (just loaded: slot == counters)
             {
@@ -419,6 +443,9 @@ static partial class SelfTest
                     if (l != null && l.TryReadLocal(out var m2) && !l.LoadPending && ((m2.SceneId == scene && (l.ActiveTalk() != 0 || l.PlayingCutscene() != 0)) || paused)
                         && ++waitTaps % 4 == 0)
                     {
+                        // on the pause menu (a tap landed as Start once the level ran): leave it the
+                        // way its resume entry does; more taps only wander the menu
+                        if (l.Mem.ReadU32(0x803CB8A8) == 7) { l.Resume(); continue; }
                         uint[] cycle = { 0x10000u, 0x80000u, 0x20000u, 0x40000u, 0x1u };
                         l.PadOverride(true, l.PlayingCutscene() != 0 ? 0x1u : l.ActiveTalk() == 0 ? PromptAnswer(l) : cycle[(waitTaps / 4) % cycle.Length]);
                         Thread.Sleep(100);
@@ -923,7 +950,7 @@ static partial class SelfTest
             + (diff.Count > 0 ? ": " + string.Join(", ", diff.GroupBy(t => t).Select(g => $"type 0x{g.Key:X2} x{g.Count()}")) : ""));
     }
 
-    static void Compare(string name, Bot X, Bot Y, string? _)
+    static void Compare(string name, Bot X, Bot Y, string? _, ISet<uint>? personal = null)
     {
         var objs = X.L.SceneObjects();
         int tracked = 0;
@@ -938,6 +965,7 @@ static partial class SelfTest
             foreach (var o in objs)
             {
                 if (hx[o.index] == 0 && hy[o.index] == 0) continue;
+                if (personal != null && personal.Contains(o.id)) continue;
                 tracked++;
                 if (hx[o.index] != hy[o.index]) diff.Add((o.index, o.id, o.type));
             }

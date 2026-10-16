@@ -24,6 +24,8 @@ public sealed class Config
     public bool WatchAlong { get; set; } = true;
     /// <summary>Screen the game window opens on (Windows device name, "" = Dolphin's choice).</summary>
     public string Monitor { get; set; } = "";
+    /// <summary>That screen's bounds when it was picked ("x,y,w,h"): finds it again after Windows renumbers displays.</summary>
+    public string MonitorBounds { get; set; } = "";
     public string DolphinPath { get; set; } = "";
     public string DeluxeDir { get; set; } = "";
 

@@ -36,6 +36,7 @@ GAME_SYMBOLS = {
     "xSerial_setClient": 0x80042EF0,   # xSerial::setClient(U32)
     "zSceneFindObject": 0x800B4A3C,
     "zEntEvent": 0x8001F5F0,           # zEntEvent(xBase*, U32)
+    "zGameStateSwitchEvent": 0x8009A984,   # zGameStateSwitchEvent(S32): what a dispatcher does with SetGameState_*
     "zEntPlayerControlOn": 0x80066500,
     "zEntPickup_CheckAllPickupsAgainstPlayer": 0x800631EC,
     "ztalkbox_start_talk": 0x80132890,     # ztalkbox::start_talk(const char*, callback*, zNPCCommon*)

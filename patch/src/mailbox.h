@@ -159,7 +159,7 @@ typedef struct {
     u32 invSeq;                  // 0x44F0 bridge bumps after filling invAdd
     u32 invAck;                  // 0x44F4
     // test hook: send an event to a scene object (as its trigger would)
-    u32 evtId;                   // 0x44F8
+    u32 evtId;                   // 0x44F8 test hook: event to object id (0 = game state event, only 159 resume)
     u32 evtCode;                 // 0x44FC
     u32 evtSeq;                  // 0x4500
     u32 evtAck;                  // 0x4504

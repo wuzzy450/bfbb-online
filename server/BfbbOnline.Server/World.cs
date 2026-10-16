@@ -21,6 +21,8 @@ namespace BfbbOnline.Server;
 public sealed class World
 {
     readonly Dictionary<uint, byte[]> slots = new();
+    /// <summary>Payments made in each scene (shiny doors...): (object id, event), replayed by every game there.</summary>
+    readonly Dictionary<uint, HashSet<(uint id, uint ev)>> pays = new();
     readonly object gate = new();
     public string? Path { get; }
     public bool Dirty { get; private set; }
@@ -130,6 +132,32 @@ public sealed class World
         SerialBits.SetValue(plyr, bit, 4, (uint)Math.Min(v, uint.MaxValue));
     }
 
+    /// <summary>Records a payment; false if it was already known.</summary>
+    public bool AddPay(uint scene, uint id, uint ev)
+    {
+        lock (gate)
+        {
+            if (!pays.TryGetValue(scene, out var set)) pays[scene] = set = new();
+            if (!set.Add((id, ev))) return false;
+            Dirty = true;
+            return true;
+        }
+    }
+
+    public List<(uint scene, uint id, uint ev)> AllPays()
+    {
+        lock (gate) return pays.SelectMany(kv => kv.Value.Select(v => (kv.Key, v.id, v.ev))).ToList();
+    }
+
+    JsonObject PaysJson()
+    {
+        var o = new JsonObject();
+        foreach (var (scene, set) in pays.OrderBy(k => k.Key))
+            o[TagName(scene)] = new JsonArray(set.OrderBy(v => v.id).ThenBy(v => v.ev)
+                .Select(v => (JsonNode)JsonValue.Create($"{v.id:X8}:{v.ev}")).ToArray());
+        return o;
+    }
+
     // ---- persistence ------------------------------------------------------------------------
     public static string TagName(uint tag) => PlayerState.SceneName(tag);
 
@@ -162,6 +190,20 @@ public sealed class World
         {
             slots.Clear();
             foreach (var (k, v) in FromJson(o?["slots"] as JsonObject)) slots[k] = v;
+            pays.Clear();
+            if (o?["pays"] is JsonObject po)
+                foreach (var (k, v) in po)
+                {
+                    if (k.Length != 4 || v is not JsonArray arr) continue;
+                    var set = new HashSet<(uint, uint)>();
+                    foreach (var e in arr)
+                    {
+                        var parts = (e?.GetValue<string>() ?? "").Split(':');
+                        if (parts.Length == 2 && uint.TryParse(parts[0], System.Globalization.NumberStyles.HexNumber, null, out var id)
+                            && uint.TryParse(parts[1], out var ev)) set.Add((id, ev));
+                    }
+                    pays[PlayerState.SceneIdOf(k)] = set;
+                }
         }
     }
 
@@ -172,7 +214,7 @@ public sealed class World
         lock (gate)
         {
             if (!Dirty) return;
-            o = new JsonObject { ["format"] = 1, ["saved"] = DateTime.UtcNow.ToString("o"), ["slots"] = ToJson() };
+            o = new JsonObject { ["format"] = 1, ["saved"] = DateTime.UtcNow.ToString("o"), ["slots"] = ToJson(), ["pays"] = PaysJson() };
             Dirty = false;
         }
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);

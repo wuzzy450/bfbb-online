@@ -10,7 +10,8 @@
 #define SCRATCH_SIZE 400u
 #define OBJ_MAX      4096
 #define SCAN_PER_FRAME 96
-#define VCALL        1u            // NPCs: virtual Save/Load through the vtable at +0x1B8
+#define VCALL        1u
+#define TBOX_PLRSTATE 0xE0         // _zEntTeleportBox::currPlrState (zEntTeleportBox_Save 0x8012D658)            // NPCs: virtual Save/Load through the vtable at +0x1B8
 
 // zSceneSave / zSceneLoad dispatch (base type -> function), extracted from the game.
 static const u32 saveFn[0x46] = {
@@ -105,7 +106,23 @@ u32 bbol_shiny_event(u8* from, u32 fromEvent, u8* to, u32 ev, const f32* param)
 }
 
 // Sends obj's links for `event` (what the game does after obj handled it) without obj's own
-// handler running again. Shinies given/charged along the way are dropped.
+// handler running again. Shinies given/charged along the way are dropped; collected pickups stay collected.
+#define PICKUP_STATE 0x16C
+#define PICKUP_GRABBING 0x4u   // flying to the player; collectPickup() then gives the item
+static int pickup_busy(u8* b);
+static u8* scene_base(u32 i, u32* count);
+static u8 personal[OBJ_MAX];
+
+// A pickup a trigger chain hands out (race reward, Mr. Krabs' bought spatula: race_scan, personal 4)
+// belongs to the player who earned it; a teammate's replay mustn't put it in this game too.
+static int reward_pickup(u8* p)
+{
+    u32 count;
+    scene_base(0, &count);
+    for (u32 i = 0; i < count && i < OBJ_MAX; i++)
+        if (scene_base(i, &count) == p) return personal[i] == 4;
+    return 0;
+}
 void objsync_relay_links(void* obj, u32 event)
 {
     u8* o = obj;
@@ -115,7 +132,9 @@ void objsync_relay_links(void* obj, u32 event)
     for (u32 i = 0; i < o[5]; i++, l += 0x20) {
         if (AT(u16, l) != event) continue;
         void* dst = zSceneFindObject(AT(u32, l + 4));
-        if (!dst) continue;
+        // a pickup already collected here (the payer took Mr. Krabs' golden spatula and that synced
+        // first): showing it again would let this game collect it a second time
+        if (!dst || (((u8*)dst)[4] == 0x04 && ((AT(u32, (u8*)dst + PICKUP_STATE) & 0x0C) || pickup_busy(dst) || reward_pickup(dst)))) continue;
         void* w = AT(u32, l + 0x18) ? zSceneFindObject(AT(u32, l + 0x18)) : 0;
         ZENTEVENT_FULL(o, event, dst, AT(u16, l + 2), (const f32*)(l + 8), w, 0);
     }
@@ -198,8 +217,6 @@ static u8* scene_base(u32 i, u32* count)
     return base ? base[i] : 0;
 }
 
-#define PICKUP_STATE 0x16C
-#define PICKUP_GRABBING 0x4u   // flying to the player; collectPickup() then gives the item
 
 // A pickup being collected right now: report it once it has settled (gone), and never overwrite
 // it, or the receiving game would finish the collection and give the item to its own player.
@@ -243,7 +260,7 @@ static int transient(u8* b)
 
 // An object that starts a cinematic (links to a cutscene manager) stays personal: the cinematic is
 // played once per player, so a teammate who missed it still gets it from their own trigger.
-static u8 personal[OBJ_MAX];   // 0 unknown, 1 shared, 2 personal, 3 ticks on its own (a clock),
+static u8 personal[OBJ_MAX];   // (declared above) 0 unknown, 1 shared, 2 personal, 3 ticks on its own (a clock),
                                // 4 a race's reward (reported for counting only), 5 a race's end chain
 static u16 noisyFrame[OBJ_MAX]; // low 16 bits of mb.frames when the current 2 s window started
 static u8 noisyCount[OBJ_MAX];
@@ -352,7 +369,15 @@ static u32 save_obj(u8* b)
     fn_sl f = resolve(saveFn, b, 0x34);
     if (!f) return 0;
     scratch_begin();
-    f(b, &xs);
+    if (b[4] == 0x31) {
+        // teleport boxes: only open/closed is shared. Their save also holds where THIS game's player
+        // is in the box (inside / teleporting...); a teammate's copy made our box move our player.
+        u32 keep = AT(u32, b + TBOX_PLRSTATE);
+        AT(u32, b + TBOX_PLRSTATE) = 0;   // PLAYER_STATE_OUTSIDE
+        f(b, &xs);
+        AT(u32, b + TBOX_PLRSTATE) = keep;
+    } else
+        f(b, &xs);
     return xs.warned ? 0 : (u32)xs.bittally;
 }
 
@@ -440,7 +465,9 @@ static void apply_in(void)
                 xSerial_setClient(&xs, SCRATCH_TAG);
                 muteTaskEvents = b[4] == 0x35;
                 u32 talk0 = AT(u32, TALK_SHARED + 8);
+                u32 plr = b[4] == 0x31 ? AT(u32, b + TBOX_PLRSTATE) : 0;
                 f(b, &xs);
+                if (b[4] == 0x31) AT(u32, b + TBOX_PLRSTATE) = plr;   // our player's place in the box stays ours
                 muteTaskEvents = 0;
                 if (AT(u32, TALK_SHARED + 8) != talk0) { mb.dbgRender[2]++; mb.dbgRender[3] = AT(u32, b); }
                 // remember the applied state so it isn't reported back as our own change

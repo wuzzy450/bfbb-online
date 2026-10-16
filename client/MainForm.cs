@@ -118,11 +118,11 @@ public sealed class MainForm : Form
         var screens = Screen.AllScreens;
         for (int i = 0; i < screens.Length; i++)
             monitor.Items.Add($"Monitor {i + 1}{(screens[i].Primary ? " (main)" : "")}  {screens[i].Bounds.Width}x{screens[i].Bounds.Height}");
-        int sel = Array.FindIndex(screens, s => s.DeviceName == cfg.Monitor);
-        monitor.SelectedIndex = sel + 1;
+        var picked = GameScreen.Resolve(cfg, screens);
+        monitor.SelectedIndex = picked == null ? 0 : Array.IndexOf(screens, picked) + 1;
         monitor.SelectedIndexChanged += (_, _) =>
         {
-            cfg.Monitor = monitor.SelectedIndex > 0 ? screens[monitor.SelectedIndex - 1].DeviceName : "";
+            GameScreen.Remember(cfg, monitor.SelectedIndex > 0 ? screens[monitor.SelectedIndex - 1] : null);
             try { cfg.Save(); } catch { }
         };
         // takes effect right away, also while playing

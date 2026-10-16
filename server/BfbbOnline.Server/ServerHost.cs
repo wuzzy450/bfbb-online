@@ -50,9 +50,6 @@ public sealed class Party
 
     readonly HashSet<(uint, uint)> spatulas = new();
 
-    /// <summary>Payments made in each scene (shiny doors...): (object id, event), replayed by every game there.</summary>
-    public readonly Dictionary<uint, HashSet<(uint id, uint ev)>> Pays = new();
-
     /// <summary>True the first time this spatula pickup is seen collected.</summary>
     public bool FirstSpatula(uint scene, uint id) { lock (spatulas) return spatulas.Add((scene, id)); }
 
@@ -296,9 +293,7 @@ public sealed class ServerHost : IDisposable
         }
         var world = party.World.ForPlayer(character, p.PersonalPlyr);
         p.Baseline = world.ToDictionary(k => k.Key, v => (byte[])v.Value.Clone());
-        List<(uint s, uint id, uint ev)> paid;
-        lock (party.Pays) paid = party.Pays.SelectMany(kv => kv.Value.Select(v => (kv.Key, v.id, v.ev))).ToList();
-        foreach (var (ps, pid, pev) in paid) p.Conn.Send(PayMsg(ps, pid, pev));
+        foreach (var (ps, pid, pev) in party.World.AllPays()) p.Conn.Send(PayMsg(ps, pid, pev));
         var r = Proto.Msg("world");
         r["seq"] = o["seq"]?.DeepClone();
         r["slots"] = ToJsonSlots(world);
@@ -426,11 +421,7 @@ public sealed class ServerHost : IDisposable
         if (party == null || o["id"]?.GetValue<uint>() is not uint id || o["ev"]?.GetValue<uint>() is not uint ev) return;
         uint scene = PlayerState.SceneIdOf(o["s"]?.GetValue<string>() ?? "");
         if (scene == 0) return;
-        lock (party.Pays)
-        {
-            if (!party.Pays.TryGetValue(scene, out var set)) party.Pays[scene] = set = new();
-            set.Add((id, ev));
-        }
+        party.World.AddPay(scene, id, ev);
         var m = PayMsg(scene, id, ev).ToJsonString();
         List<Player> to;
         lock (gate) to = party.Members.Where(x => x != p).ToList();
