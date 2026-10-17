@@ -174,6 +174,8 @@ static partial class SelfTest
             // 1. B's boss follows A's
             int samples = 0, posOk = 0, animOk = 0, goalOk = 0, hpOk = 0;
             var goalDiff = new List<string>();
+            int frozen = 0; float lastBt = -1; uint lastBs = 0;
+            float ATime(Bot b) { uint m = b.L.Mem.ReadU32(ptr + 0x24); uint pl = m >= 0x80000000 ? b.L.Mem.ReadU32(m + 0x0C) : 0; uint si = pl >= 0x80000000 ? b.L.Mem.ReadU32(pl + 8) : 0; return si >= 0x80000000 ? BitConverter.UInt32BitsToSingle(b.L.Mem.ReadU32(si + 8)) : 0; }
             double worst = 0;
             for (int k = 0; k < 30; k++)
             {
@@ -184,12 +186,13 @@ static partial class SelfTest
                 if (d < 1.5) posOk++;
                 if (Anim(A) == Anim(B)) animOk++;
                 { uint ga = Goal(A), gb = Goal(B); if (ga == gb) goalOk++; else goalDiff.Add($"{G(ga)}/{G(gb)}"); }
+                { float bt = ATime(B); uint bs = Anim(B); if (bs == lastBs && MathF.Abs(bt - lastBt) < 0.001f) frozen++; lastBt = bt; lastBs = bs; }
                 if (Hp(A) == Hp(B) && Round(A) == Round(B)) hpOk++;
                 Thread.Sleep(200);
             }
-            bool follow = posOk >= samples * 0.8 && animOk >= samples * 0.6 && goalOk >= samples * 0.6 && hpOk == samples;
+            bool follow = posOk >= samples * 0.8 && animOk >= samples * 0.6 && goalOk >= samples * 0.6 && hpOk == samples && frozen <= 3;
             if (goalDiff.Count > 0) Log($"boss goals differing ({name}) A/B: {string.Join(" ", goalDiff)}");
-            Result($"boss follows ({name})", follow, $"{Nm(sc, o.id)}: position within 1.5 in {posOk}/{samples} samples (worst {worst:0.0}), same animation {animOk}/{samples}, same goal {goalOk}/{samples} (A {G(Goal(A))}, B {G(Goal(B))}), same health {hpOk}/{samples} (hp {Hp(A)}, round {Round(A)})");
+            Result($"boss follows ({name})", follow, $"{Nm(sc, o.id)}: position within 1.5 in {posOk}/{samples} samples (worst {worst:0.0}), same animation {animOk}/{samples}, same goal {goalOk}/{samples} (A {G(Goal(A))}, B {G(Goal(B))}), same health {hpOk}/{samples} (hp {Hp(A)}, round {Round(A)}), B's animation stood still in {frozen}/{samples}");
             // 2. a hit in B's game: B takes the boss over, everyone loses the same hit point
             if (!hpKnown) { Log($"boss hit ({name}): hit points of {G(A.L.Mem.ReadU32(ptr + 0xF4))} unknown, follow check only"); continue; }
             if (A.L.Mem.ReadU32(ptr + 0xF4) == 0x4E544233)

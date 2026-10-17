@@ -221,7 +221,7 @@ static partial class SelfTest
             B.L.TryReadLocal(out var bp);
             var ap2 = ap;
             B.L.TryReadLocal(out var b0);
-            uint h0 = B.L.Global(0x16B0);
+            uint h0 = B.L.Global(0x16B0), hits0 = B.L.DbgRender(17);
             switch (move)
             {
                 case "idle": Thread.Sleep(2500); break;
@@ -268,7 +268,8 @@ static partial class SelfTest
             uint h1 = B.L.Global(0x16B0);
             B.L.TryReadLocal(out var b1);
             double pushed = Math.Sqrt(Sq(b1.X - b0.X) + Sq(b1.Z - b0.Z));
-            bool hurt = h1 < h0;
+            // the patch's own PvP hit count (health alone also moves with the party's max-health sync)
+            bool hurt = B.L.DbgRender(17) > hits0;
             bool want = on && move != "idle";
             Result($"pvp {(on ? "on" : "off")}: {move}", hurt == want,
                 $"B health {h0} -> {h1}, B pushed {pushed:F1} units; A {Math.Sqrt(Sq(ap2.X - bp.X) + Sq(ap2.Z - bp.Z)):F1} units from B before the {move} (want hurt: {want})");
@@ -372,7 +373,7 @@ static partial class SelfTest
             // B's puppet of A has caught up with the teleport (else its old spot reads as a rise)
             WaitFor(() => B.L.PuppetPos(slot) is { } q0 && A.L.TryReadLocal(out var a0) && Sq(q0.x - a0.X) + Sq(q0.y - a0.Y) + Sq(q0.z - a0.Z) < 0.5, 5);
             if (A.L.TryReadLocal(out var a1)) ap = a1;
-            uint h0 = B.L.Global(0x16B0);
+            uint h0 = B.L.Global(0x16B0), hits0 = B.L.DbgRender(17);
             var seen = new List<string>(); var mine = new List<string>(); var path = new List<string>();
             var mineSamples = new Dictionary<string, int>();
             string preA = AnimDesc(A, LocalAnim(A)).Split(' ')[0], preP = AnimDesc(B, PuppetAnim(B, slot)).Split(' ')[0];
@@ -415,7 +416,7 @@ static partial class SelfTest
             if (bInFront)
             {
                 uint h1 = B.L.Global(0x16B0);
-                Result($"chars {scene}: {CN(Ch(A))} {label}: pvp {(on ? "on" : "off")}", (h1 < h0) == on, $"B health {h0} -> {h1} (want hurt: {on}); PvP hits taken {B.L.DbgRender(17)}");
+                Result($"chars {scene}: {CN(Ch(A))} {label}: pvp {(on ? "on" : "off")}", (B.L.DbgRender(17) > hits0) == on, $"B health {h0} -> {h1} (want hurt: {on}); PvP hits taken {B.L.DbgRender(17)}");
             }
             return (aMaxY - y0, pMaxY - y0);
         }
@@ -575,7 +576,7 @@ static partial class SelfTest
                 uint p = A.L.ObjPtr(q.index);
                 byte t = A.L.Mem.Read(p + 0xD8 + 4, 1)[0];
                 uint flags = A.L.Mem.ReadU32(p + 0xD8 + 4) & 0xFFFF;
-                if (t <= 5 && t != 2 && A.L.Mem.ReadU32(p + 0xD8) >= 0x80000000 && (flags & 4) == 0) moving.Add((Nm(sc, q.id), q.index));
+                if ((t == 0 || t == 1 || t == 3 || t == 5) && A.L.Mem.ReadU32(p + 0xD8) >= 0x80000000 && (flags & 4) == 0) moving.Add((Nm(sc, q.id), q.index));
             }
             if (moving.Count == 0) { Log($"plats {scene}: no self-moving platforms"); continue; }
             (float x, float y, float z) Pos(Bot X, int index) { uint p = X.L.ObjPtr(index); var m = X.L.Mem.Read(X.L.Mem.ReadU32(X.L.Mem.ReadU32(p + 0x24) + 0x4C) + 0x30, 12); float P(int o) => System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(o)); return (P(0), P(4), P(8)); }
@@ -588,6 +589,14 @@ static partial class SelfTest
                     worst.Add((name, Math.Sqrt(Sq(pa.x - pb.x) + Sq(pa.y - pb.y) + Sq(pa.z - pb.z))));
                 }
                 Thread.Sleep(400);
+            }
+            var cube = objs.FirstOrDefault(q => Nm(sc, q.id).StartsWith("CUBE_MECH"));
+            if (cube.id != 0)
+            {   // look at a spiked cube from B (spikes ride on it)
+                var cp = Pos(B, cube.index);
+                B.L.Teleport(cp.x + 6, cp.y + 2, cp.z, MathF.Atan2(-6, 0));
+                Thread.Sleep(2500);
+                Shot(B, $"plats-{scene}-cube", true);
             }
             var byPlat = worst.GroupBy(w => w.Item1).Select(g => (name: g.Key, err: g.Min(x => x.Item2))).OrderByDescending(x => x.err).ToList();
             var bad = byPlat.Where(x => x.err > 0.6).ToList();

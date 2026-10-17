@@ -27,7 +27,9 @@ static int self_moving(u8* b)
 {
     if ((u32)b < 0x80000000u || b[4] != BASE_PLATFORM) return 0;
     u8 t = b[PL_MOTION + MO_TYPE];
-    if (t > 5 || t == 2) return 0;   // spline motion: unused
+    // not mechanisms: things ride on them through the game's drive/attach logic (DB01's spinning
+    // spike cubes: the spikes floated off when a cube was put in place); objsync already keeps them
+    if (!(t == 0 || t == 1 || t == 3 || t == 5)) return 0;
     if ((u32)AT(u32, b + PL_MOTION) < 0x80000000u) return 0;   // no motion asset
     u8* mdl = (u8*)AT(u32, b + ENT_MODEL);
     return (u32)mdl >= 0x80000000u && (u32)mdl < 0x82000000u && (u32)AT(u32, mdl + 0x4C) >= 0x80000000u;
@@ -47,10 +49,17 @@ void platsync_frame(void)
     // owner: snapshot every moving platform
     if (mb.platOwner && ++platFrame >= PLAT_EVERY) {
         platFrame = 0;
+        // moving platforms first, then stopped ones (a follower's copy may still be running), the
+        // stopped ones in turns when there are more than fit
+        static u32 rot;
         u32 k = 0;
-        for (u32 i = 0; i < n && k < PLAT_MAX; i++) {
+        for (u32 pass = 0; pass < 1; pass++)   // moving ones only (stopped ones: the same risk)
+        for (u32 j = 0; j < n && k < PLAT_MAX; j++) {
+            u32 i = pass ? (j + rot) % n : j;
             u8* b = base[i];
-            if (!self_moving(b) || (AT(u16, b + PL_MOTION + MO_FLAGS) & MO_STOPPED)) continue;
+            if (!self_moving(b)) continue;
+            int stopped = (AT(u16, b + PL_MOTION + MO_FLAGS) & MO_STOPPED) != 0;
+            if (stopped != (int)pass) continue;
             volatile PlatState* p = &mb.platOut[k++];
             p->index = (u16)i;
             p->flags = 1;
@@ -59,6 +68,7 @@ void platsync_frame(void)
             f32* m = mat_of(b);
             for (int j = 0; j < 16; j++) p->mat[j] = m[j];
         }
+        rot += 16;
         mb.platOutScene = scene;
         mb.platOutCount = k;
         mb.platOutSeq = mb.platOutSeq + 1;

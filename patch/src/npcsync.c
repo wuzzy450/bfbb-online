@@ -226,17 +226,25 @@ static void set_pose(u8* b, volatile NpcPose* q)
     }
 }
 
-static void set_anim(u8* b, volatile NpcPose* q, int fresh)
+// The owner's animation time is as old as its pose: it has played on since (age). Setting a state
+// with the stale time every frame (the follower's own AI kept leaving it) or pulling the time back
+// froze bosses mid-animation (Robo-Sandy).
+static u32 poseFrame[OBJ_MAX];
+static void set_anim(u32 i, u8* b, volatile NpcPose* q, int fresh)
 {
     u8* table;
     u8* single = anim_single(b, &table);
     u32 st = q->animState;
     if (!single || !st) return;
+    if (fresh) poseFrame[i] = mb.frames;
+    f32 age = (f32)(mb.frames - poseFrame[i]) * (1.0f / 60.0f);
+    if (age > 1.0f) age = 1.0f;
+    f32 t = q->animTime + age;
     if (AT(u32, single + 4) != st) {
-        if (state_in_table(table, st)) xAnimPlaySetState(single, (void*)st, q->animTime);
+        if (state_in_table(table, st)) xAnimPlaySetState(single, (void*)st, t);
     } else if (fresh) {
-        f32 d = AT(f32, single + 8) - q->animTime;
-        if (d > 0.25f || d < -0.25f) AT(f32, single + 8) = q->animTime;
+        f32 d = AT(f32, single + 8) - t;
+        if (d > 0.5f || d < -0.5f) AT(f32, single + 8) = t;
     }
 }
 
@@ -342,7 +350,7 @@ void npcsync_frame(void)
                 set_goal(i, b, q);
             } else if (own[i]) continue;
             set_pose(b, q);
-            set_anim(b, q, fresh);
+            set_anim(i, b, q, fresh);
             if (fresh) mb.npcApplied++;
         }
     }
