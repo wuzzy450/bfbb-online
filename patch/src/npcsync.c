@@ -72,7 +72,10 @@ static void hp_fields(u32 t, u32* hp, u32* round, int* inv)
     switch (t) {
     case 0x4E544230: *hp = 0x2D4; *round = 0x2D8; break;   // NTB0 Robo-Sandy
     case 0x4E544231: *hp = 0x2B8; *round = 0x2BC; break;   // NTB1 Robo-Patrick
-    case 0x4E544233: *hp = 0x2C4; *round = 0x2C8; break;   // NTB3 Robo-SpongeBob (zNPCB_SB2::check_life)
+    // NTB3 Robo-SpongeBob: life is COUNTED every frame by check_life (0x8015BF60: his 9 nodes at
+    // +0x300 stride 0x74 not yet destroyed). The nodes are breakables (objsync), so a hit reaches every
+    // game that way; writing life/round would only fight the count: read-only (inv 2)
+    case 0x4E544233: *hp = 0x2C4; *round = 0x2C8; *inv = 2; break;
     case 0x4E544234: *hp = 0x698; *inv = 1; break;         // NTB4 Robo-Plankton (next_territory)
     case 0x4E544830: *hp = 0x2C4; *round = 0x2BC; break;   // NTH0 King Jellyfish
     case 0x4E544831: *hp = 0x2C4; *round = 0x2C8; break;   // NTH1 Flying Dutchman
@@ -83,11 +86,12 @@ static void hp_fields(u32 t, u32* hp, u32* round, int* inv)
 static s32 hp_get(u8* b, u32 hpo, int inv)
 {
     s32 v = AT(s32, b + hpo);
-    return inv ? HP_INV_BASE - v : v;
+    return inv == 1 ? HP_INV_BASE - v : v;
 }
 
 static void hp_put(u8* b, u32 hpo, int inv, s32 v)
 {
+    if (inv == 2) return;   // derived by the game itself
     AT(s32, b + hpo) = inv ? HP_INV_BASE - v : v;
 }
 
@@ -236,15 +240,18 @@ static void set_anim(u8* b, volatile NpcPose* q, int fresh)
     }
 }
 
+static u8 goalMiss[OBJ_MAX];
 static void set_goal(u32 i, u8* b, volatile NpcPose* q)
 {
     u8* psy = psyche_of(b);
     s32 g = q->goal;
     if (!psy || !g) return;
-    if (GIDOfActive(psy) == g || GIDOfPending(psy) == g) { lastGoal[i] = g; return; }
-    // ask once per goal the owner enters (the goal's own entry code runs), not every frame
-    if (lastGoal[i] == g) return;
+    if (GIDOfActive(psy) == g || GIDOfPending(psy) == g) { lastGoal[i] = g; goalMiss[i] = 0; return; }
+    // ask once per goal the owner enters (the goal's own entry code runs), not every frame; but our
+    // own AI may move on while the owner stays: still off after 20 updates -> ask again
+    if (lastGoal[i] == g && ++goalMiss[i] < 20) return;
     lastGoal[i] = g;
+    goalMiss[i] = 0;
     GoalSet(psy, g, 0);
 }
 
@@ -329,7 +336,7 @@ void npcsync_frame(void)
                         continue;
                     }
                     hp_put(b, hpo, inv, q->hp);
-                    if (ro) AT(s32, b + ro) = q->round;
+                    if (ro && inv != 2) AT(s32, b + ro) = q->round;
                     lastHp[i] = q->hp;
                 }
                 set_goal(i, b, q);

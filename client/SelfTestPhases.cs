@@ -132,6 +132,7 @@ static partial class SelfTest
             System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(p.AsSpan(8)));
     }
 
+    const uint DobjDestroyed = 2;   // zEntDestructObj::state (objsync.c DOBJ_DESTROYED)
     static readonly Dictionary<uint, (uint hp, uint round)> BossHp = new()
     {
         [0x4E544230] = (0x2D4, 0x2D8), [0x4E544231] = (0x2B8, 0x2BC), [0x4E544830] = (0x2C4, 0x2BC),
@@ -172,6 +173,7 @@ static partial class SelfTest
             string G(uint g) => g == 0 ? "-" : System.Text.Encoding.ASCII.GetString(BitConverter.GetBytes(g).Reverse().ToArray());
             // 1. B's boss follows A's
             int samples = 0, posOk = 0, animOk = 0, goalOk = 0, hpOk = 0;
+            var goalDiff = new List<string>();
             double worst = 0;
             for (int k = 0; k < 30; k++)
             {
@@ -181,14 +183,34 @@ static partial class SelfTest
                 samples++;
                 if (d < 1.5) posOk++;
                 if (Anim(A) == Anim(B)) animOk++;
-                if (Goal(A) == Goal(B)) goalOk++;
+                { uint ga = Goal(A), gb = Goal(B); if (ga == gb) goalOk++; else goalDiff.Add($"{G(ga)}/{G(gb)}"); }
                 if (Hp(A) == Hp(B) && Round(A) == Round(B)) hpOk++;
                 Thread.Sleep(200);
             }
             bool follow = posOk >= samples * 0.8 && animOk >= samples * 0.6 && goalOk >= samples * 0.6 && hpOk == samples;
+            if (goalDiff.Count > 0) Log($"boss goals differing ({name}) A/B: {string.Join(" ", goalDiff)}");
             Result($"boss follows ({name})", follow, $"{Nm(sc, o.id)}: position within 1.5 in {posOk}/{samples} samples (worst {worst:0.0}), same animation {animOk}/{samples}, same goal {goalOk}/{samples} (A {G(Goal(A))}, B {G(Goal(B))}), same health {hpOk}/{samples} (hp {Hp(A)}, round {Round(A)})");
             // 2. a hit in B's game: B takes the boss over, everyone loses the same hit point
             if (!hpKnown) { Log($"boss hit ({name}): hit points of {G(A.L.Mem.ReadU32(ptr + 0xF4))} unknown, follow check only"); continue; }
+            if (A.L.Mem.ReadU32(ptr + 0xF4) == 0x4E544233)
+            {
+                // Robo-SpongeBob: life = his nodes (+0x300, stride 0x74) not destroyed. B destroys one
+                // node the game's way (Destroy event); A's count must drop with it.
+                int l0 = Hp(A);
+                uint node = 0;
+                for (uint k = 0; k < 9 && node == 0; k++)
+                {
+                    uint ne = B.L.Mem.ReadU32(ptr + 0x300 + k * 0x74);
+                    if (ne >= 0x80000000 && B.L.Mem.Read(ne + 4, 1)[0] == 0x1B && B.L.Mem.ReadU32(ne + 0xD8) != DobjDestroyed) node = B.L.Mem.ReadU32(ne);
+                }
+                if (node == 0) { Result($"boss hit ({name})", false, $"no intact node to break (life {l0})"); continue; }
+                B.L.SendEvent(node, 22);
+                bool nb = WaitFor(() => Hp(B) == l0 - 1 && Hp(A) == l0 - 1, 6);
+                Thread.Sleep(2000);
+                bool ns = Hp(A) == l0 - 1 && Hp(B) == l0 - 1;
+                Result($"boss hit ({name})", nb && ns, $"{G(A.L.Mem.ReadU32(ptr + 0xF4))} life {l0} (nodes left): B broke node {Nm(sc, node)} -> A {(nb ? "lost it too" : "DID NOT")}{(ns ? "" : " (then it CAME BACK)")}; now A {Hp(A)} B {Hp(B)}");
+                continue;
+            }
             if (up)
             {
                 int t0 = Hp(A);
@@ -200,6 +222,12 @@ static partial class SelfTest
                 continue;
             }
             int hp0 = Hp(A);
+            if (hp0 <= 1 && hp0 >= 0)
+            {   // last hit point (Robo-Squidward starts at 1): give the boss 3 everywhere so a hit can be tested
+                foreach (var bt in new[] { A, B }) bt.L.Mem.WriteU32(ptr + hpo, 3);
+                Thread.Sleep(1500);
+                hp0 = Hp(A);
+            }
             if (hp0 <= 1) { Result($"boss hit ({name})", false, $"boss hit points {hp0}: nothing to take away"); continue; }
             B.L.Mem.WriteU32(ptr + hpo, (uint)(hp0 - 1));
             bool both = WaitFor(() => Hp(A) == hp0 - 1 && Hp(B) == hp0 - 1, 5);
