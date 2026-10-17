@@ -27,6 +27,7 @@ static class Program
         }
         for (int i = 0; i < args.Length - 1; i++)
             if (args[i] == "--port" && int.TryParse(args[i + 1], out int port)) opt.Port = port;
+        if (args.Contains("--pvp")) opt.Pvp = true;
         opt.DataDir = Path.GetFullPath(Path.Combine(dir, opt.DataDir));
         opt.Sims.WorkDir = Path.GetFullPath(Path.Combine(dir, opt.Sims.WorkDir));
         opt.Log = Console.WriteLine;

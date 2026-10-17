@@ -301,7 +301,7 @@ static partial class SelfTest
         uint sp = A.L.ObjPtr(stop.index);
         float SF(Bot X, uint addr) => BitConverter.Int32BitsToSingle((int)X.L.Mem.ReadU32(addr));
         float sx = SF(A, sp + 0x18), sy = SF(A, sp + 0x1C), sz = SF(A, sp + 0x20);
-        uint Ch(Bot X) => X.L.Mem.ReadU32(GCurrentPlayer);
+        uint Ch(Bot X) => CharOf(X);
         bool Wears(Bot X, uint ch) => ch < 3 && X.L.Global(GEntModel) != 0 && X.L.Global(GEntModel) == X.L.Global(GModelSb + 4 * ch);
         bool PupWears(Bot viewer, int slot, uint ch) => ch < 3 && slot >= 0 && viewer.L.PuppetGlobal(slot, GEntModel) != 0 && viewer.L.PuppetGlobal(slot, GEntModel) == viewer.L.PuppetGlobal(slot, GModelSb + 4 * ch);
         string CN(uint c) => CharNames[Math.Min(c, 2u)];
@@ -511,10 +511,11 @@ static partial class SelfTest
         Result($"chars {scene}: back to SpongeBob", Ch(A) == 0 && Ch(B) == 0, $"A {Ch(A)} B {Ch(B)}");
     }
 
-    static uint LocalAnim(Bot X)
-    {
-        try { var m = X.L.Mem; uint mdl = X.L.Global(GEntModel), an = m.ReadU32(mdl + 0xC), sg = m.ReadU32(an + 8); return m.ReadU32(sg + 4); } catch { return 0; }
-    }
+    /// <summary>Our player's animation state, as the patch publishes it once a frame outside puppet swaps.</summary>
+    static uint LocalAnim(Bot X) => X.L.DbgRender(18);
+
+    /// <summary>Our player's character as the patch publishes it (gCurrentPlayer is swapped per puppet).</summary>
+    static uint CharOf(Bot X) => X.L.TryReadLocal(out var st) ? st.Character : 0;
 
     static string AnimDesc(Bot X, uint st)
     {
@@ -525,5 +526,388 @@ static partial class SelfTest
     static uint PuppetAnim(Bot X, int slot)
     {
         try { var m = X.L.Mem; uint mdl = X.L.PuppetGlobal(slot, GEntModel), an = m.ReadU32(mdl + 0xC), sg = m.ReadU32(an + 8); return m.ReadU32(sg + 4); } catch { return 0; }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases plats [--platscenes BB01,..|all]: moving platforms. A enters a scene, B follows 8 s
+    /// later (its platforms start 8 s behind); after the owner's states arrive, every self-moving
+    /// platform must be at the same place in both games (within 0.6 units: network delay).
+    /// </summary>
+    static void PlatsPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        string list = a.GetValueOrDefault("platscenes", "BB01,BB02,JF01,GL01,RB01,SM01,KF01,GY01,DB01");
+        if (list == "all") list = "HB01,HB00,HB02,HB03,HB04,HB05,HB06,HB08,HB09,HB10,JF01,JF02,JF03,JF04,JF05,JF06,JF07,BB01,BB02,BB03,BB04,BB05,GL01,GL02,GL03,GL04,GL05,B101,RB01,RB02,RB03,RB04,BC01,BC02,BC03,BC04,BC05,BC06,BC07,BC08,SM01,SM02,SM03,SM04,SM05,B201,KF01,KF02,KF03,KF04,KF05,KF06,GY01,GY02,GY03,GY04,GY05,GY06,GY07,DB01,DB02,DB03,DB04,DB05,DB06,DB07";
+        foreach (var scene in list.Split(','))
+        {
+            uint sc = PlayerState.SceneIdOf(scene);
+            if (!GoTo(new List<Bot> { A }, sc)) return;
+            Thread.Sleep(8000);
+            if (!GoTo(new List<Bot> { B }, sc)) return;
+            WaitControl(B, TimeSpan.FromSeconds(10));
+            uint applied0 = B.L.PlatApplied;
+            Thread.Sleep(4000);
+            var objs = A.L.SceneObjects();
+            var moving = new List<(string name, int index)>();
+            foreach (var q in objs.Where(q => q.type == 0x06))
+            {
+                uint p = A.L.ObjPtr(q.index);
+                byte t = A.L.Mem.Read(p + 0xD8 + 4, 1)[0];
+                uint flags = A.L.Mem.ReadU32(p + 0xD8 + 4) & 0xFFFF;
+                if (t <= 5 && t != 2 && A.L.Mem.ReadU32(p + 0xD8) >= 0x80000000 && (flags & 4) == 0) moving.Add((Nm(sc, q.id), q.index));
+            }
+            if (moving.Count == 0) { Log($"plats {scene}: no self-moving platforms"); continue; }
+            (float x, float y, float z) Pos(Bot X, int index) { uint p = X.L.ObjPtr(index); var m = X.L.Mem.Read(X.L.Mem.ReadU32(X.L.Mem.ReadU32(p + 0x24) + 0x4C) + 0x30, 12); float P(int o) => System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(o)); return (P(0), P(4), P(8)); }
+            var worst = new List<(string, double)>();
+            for (int s = 0; s < 5; s++)
+            {
+                foreach (var (name, index) in moving)
+                {
+                    var pa = Pos(A, index); var pb = Pos(B, index);
+                    worst.Add((name, Math.Sqrt(Sq(pa.x - pb.x) + Sq(pa.y - pb.y) + Sq(pa.z - pb.z))));
+                }
+                Thread.Sleep(400);
+            }
+            var byPlat = worst.GroupBy(w => w.Item1).Select(g => (name: g.Key, err: g.Min(x => x.Item2))).OrderByDescending(x => x.err).ToList();
+            var bad = byPlat.Where(x => x.err > 0.6).ToList();
+            Result($"plats {scene}: moving platforms in step", bad.Count == 0,
+                $"{moving.Count} self-moving platforms, B took over {B.L.PlatApplied - applied0}; worst {string.Join(", ", byPlat.Take(4).Select(x => $"{x.name} {x.err:F2}"))}" + (bad.Count > 0 ? $"; {bad.Count} off by > 0.6" : ""));
+        }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases socks [--sockscenes GL01,..]: Deluxe's flying socks. Finds sock pickups that move by
+    /// themselves, checks they fly in step in A's and B's games (B arrived later), then A catches
+    /// one: it must be gone in B's game too and the party's sock count go up once.
+    /// </summary>
+    static void SocksPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        foreach (var scene in a.GetValueOrDefault("sockscenes", "GL01,HB01,JF01,BB01").Split(','))
+        {
+            uint sc = PlayerState.SceneIdOf(scene);
+            if (!GoTo(new List<Bot> { A }, sc)) return;
+            Thread.Sleep(6000);
+            if (!GoTo(new List<Bot> { B }, sc)) return;
+            foreach (var b in new[] { A, B }) WaitControl(b, TimeSpan.FromSeconds(10));
+            var socks = A.L.SceneObjects().Where(q => q.type == 0x04 && Nm(sc, q.id) is var n && (n.StartsWith("SOCK") || n.Contains("_SOCK"))).ToList();
+            (float x, float y, float z) Pos(Bot X, int index) { uint p = X.L.ObjPtr(index); var m = X.L.Mem.Read(X.L.Mem.ReadU32(X.L.Mem.ReadU32(p + 0x24) + 0x4C) + 0x30, 12); float P(int o) => System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(o)); return (P(0), P(4), P(8)); }
+            // a flying sock may only take off when someone comes near: walk up to each one
+            var flying = new List<(int index, uint id, byte type, float x, float y, float z)>();
+            foreach (var q in socks)
+            {
+                if (A.L.ObjField(q.index, 0x16C) != 0x41) continue;
+                var o = Pos(A, q.index);
+                A.L.Teleport(o.x + 1.5f, o.y + 0.5f, o.z);
+                A.L.PadOverride(true, 0, 0, 0);
+                float moved = 0;
+                for (int k = 0; k < 12; k++) { Thread.Sleep(100); var p = Pos(A, q.index); moved = MathF.Max(moved, MathF.Sqrt((float)(Sq(p.x - o.x) + Sq(p.y - o.y) + Sq(p.z - o.z)))); }
+                A.L.PadOverride(false);
+                Log($"socks {scene}: {Nm(sc, q.id)} with A 4 units away moved {moved:F2}");
+                if (moved > 0.5f)
+                {
+                    flying.Add(q);
+                    // what carries it: objects that move by the same amount at the same time
+                    var cand = new List<(int idx, string name, byte type, uint ptr)>();
+                    foreach (var o2 in A.L.SceneObjects())
+                    {
+                        uint op = A.L.ObjPtr(o2.index), md = A.L.Mem.ReadU32(op + 0x24);
+                        if (md < 0x80000000 || md >= 0x82000000 || A.L.Mem.ReadU32(md + 0x4C) < 0x80000000) continue;
+                        cand.Add((o2.index, Nm(sc, o2.id), o2.type, op));
+                    }
+                    (float, float, float) P2(uint op) { var m = A.L.Mem.Read(A.L.Mem.ReadU32(A.L.Mem.ReadU32(op + 0x24) + 0x4C) + 0x30, 12); float F(int k) => System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(k)); return (F(0), F(4), F(8)); }
+                    var c0 = cand.ToDictionary(c => c.idx, c => P2(c.ptr)); var s0 = Pos(A, q.index);
+                    Thread.Sleep(150);
+                    var c1 = cand.ToDictionary(c => c.idx, c => P2(c.ptr)); var s1 = Pos(A, q.index);
+                    float sdx = s1.x - s0.x, sdy = s1.y - s0.y, sdz = s1.z - s0.z;
+                    var movers = cand.Where(c => { var (x0, y0, z0) = c0[c.idx]; var (x1, y1, z1) = c1[c.idx]; return MathF.Abs(x1 - x0) + MathF.Abs(y1 - y0) + MathF.Abs(z1 - z0) > 0.05f; })
+                        .Select(c => { var (x0, y0, z0) = c0[c.idx]; var (x1, y1, z1) = c1[c.idx]; return $"{c.name} {c.type:X2} d {x1 - x0:F2},{y1 - y0:F2},{z1 - z0:F2}"; });
+                    uint sp = A.L.ObjPtr(q.index);
+                    Log($"socks {scene}: {Nm(sc, q.id)} moved {sdx:F2},{sdy:F2},{sdz:F2} in 150 ms; moving objects: {string.Join("; ", movers.Take(15))}; pickup bytes 0xD0..0x1A0 {Convert.ToHexString(A.L.Mem.Read(sp + 0xD0, 0xD0))}");
+                }
+            }
+            Log($"socks {scene}: {socks.Count} socks: " + string.Join(", ", socks.Select(q => { var p = Pos(A, q.index); return $"{Nm(sc, q.id)} {p.x:F1},{p.y:F1},{p.z:F1} state {A.L.ObjField(q.index, 0x16C):X}{(flying.Contains(q) ? " FLYING" : "")}"; })));
+            if (flying.Count == 0) continue;
+            double worst = 0;
+            for (int s = 0; s < 8; s++)
+            {
+                foreach (var q in flying) { var pa = Pos(A, q.index); var pb = Pos(B, q.index); worst = Math.Max(worst, Math.Sqrt(Sq(pa.x - pb.x) + Sq(pa.y - pb.y) + Sq(pa.z - pb.z))); }
+                Thread.Sleep(250);
+            }
+            Result($"socks {scene}: flying socks in step", worst < 1.5, $"{flying.Count} flying, worst distance between A's and B's copy {worst:F2} units");
+            // A catches the first one: stand where it is, over and over, until collected
+            var f = flying[0];
+            Thread.Sleep(3000);
+            uint socks0 = A.L.Global(0x1BC4), sB0 = B.L.Global(0x1BC4);
+            bool got = false;
+            for (int k = 0; k < 80 && !got; k++)
+            {
+                var p = Pos(A, f.index);
+                A.L.Teleport(p.x, p.y - 0.5f, p.z);
+                Thread.Sleep(60);
+                got = A.L.Global(0x1BC4) > socks0;
+            }
+            Thread.Sleep(3000);
+            uint sA = A.L.Global(0x1BC4), sB = B.L.Global(0x1BC4);
+            bool goneB = WaitFor(() => B.L.ObjField(f.index, 0x16C) == A.L.ObjField(f.index, 0x16C), 5);
+            Result($"socks {scene}: catch {Nm(sc, f.id)}", got && sA == socks0 + 1 && sB == sB0 + 1 && goneB,
+                $"caught {got}; socks A {socks0}->{sA}, B {sB0}->{sB}; state A {A.L.ObjField(f.index, 0x16C):X} B {B.L.ObjField(f.index, 0x16C):X}");
+            Compare($"socks {scene}: world", A, B, null);
+        }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases slides [--slidescenes SM02,..]: sliding for every character (SpongeBob TongueSlide01,
+    /// Sandy TailSlide01, Patrick ButtSlide01). A starts at the scene's spawn (slide levels start on
+    /// the slide) and walks forward; the owner's slide animations must be what B's puppet of A plays,
+    /// close to where A is. Then, if the scene has a bus stop, as its character (switch, back to spawn).
+    /// </summary>
+    static void SlidesPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        bool IsSlide(string x) => x.Contains("Slide") || x.StartsWith("Slip");
+        foreach (var scene in a.GetValueOrDefault("slidescenes", "SM02,SM03,SM04,JF03,RB02,RB03,GL03,KF05,BB02").Split(','))
+        {
+            uint sc = PlayerState.SceneIdOf(scene);
+            if (!GoTo(pair, sc)) return;
+            foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(10));
+            A.L.TryReadLocal(out var spawn);
+            int slot = SlotOf(B, A.Name);
+            var stop = A.L.SceneObjects().FirstOrDefault(q => Nm(sc, q.id).StartsWith("BUSSTOP_BUSSTOP"));
+            for (int round = 0; round < (stop.id != 0 ? 2 : 1); round++)
+            {
+                uint ch = CharOf(A);
+                string cn = CharNames[Math.Min(ch, 2u)];
+                bool slid = false;
+                foreach (var (ax, ay) in new (sbyte, sbyte)[] { (0, 100), (0, -100), (100, 0), (-100, 0) })
+                {
+                    WaitControl(A, TimeSpan.FromSeconds(20));
+                    A.L.Teleport(spawn.X, spawn.Y + 0.3f, spawn.Z);
+                    B.L.Teleport(spawn.X + 3, spawn.Y + 1.5f, spawn.Z + 3);
+                    A.L.PadOverride(true, 0, 0, 0); Thread.Sleep(1200);
+                    var mine = new List<string>(); var seen = new List<string>(); var errs = new List<double>();
+                    (float x, float y, float z) lastA = (0, 0, 0);
+                    A.L.PadOverride(true, 0, ax, ay);
+                    for (int k = 0; k < 200; k++)
+                    {
+                        Thread.Sleep(40);
+                        string an = AnimDesc(A, LocalAnim(A)).Split(' ')[0], pn = AnimDesc(B, PuppetAnim(B, slot)).Split(' ')[0];
+                        if (mine.Count == 0 || mine[^1] != an) mine.Add(an);
+                        if (seen.Count == 0 || seen[^1] != pn) seen.Add(pn);
+                        if (IsSlide(an) && A.L.TryReadLocal(out var ap) && B.L.PuppetPos(slot) is { } pp
+                            && (Math.Abs(ap.X - lastA.x) + Math.Abs(ap.Y - lastA.y) + Math.Abs(ap.Z - lastA.z) > 0.001 || Math.Abs(ap.Vx) + Math.Abs(ap.Vy) + Math.Abs(ap.Vz) < 0.01))
+                        {   // (a position that stopped updating while moving: A fell out of the world / died)
+                            lastA = (ap.X, ap.Y, ap.Z);
+                            errs.Add(Math.Sqrt(Sq(ap.X - pp.x) + Sq(ap.Y - pp.y) + Sq(ap.Z - pp.z)));
+                            if (a.ContainsKey("slidetrace") && k % 3 == 0) Log($"slide trace {cn} {an}/{pn}: A {ap.X:F1},{ap.Y:F1},{ap.Z:F1} v {ap.Vx:F1},{ap.Vy:F1},{ap.Vz:F1}; puppet {pp.x:F1},{pp.y:F1},{pp.z:F1}; err {errs[^1]:F2}");
+                        }
+                        if (errs.Count == 15) Shot(B, $"slide-{scene}-{cn}", true);
+                        if (an.Contains("Defeated")) break;
+                    }
+                    A.L.PadOverride(false);
+                    var slides = mine.Where(IsSlide).ToHashSet();
+                    Log($"slides {scene} {cn} stick {ax},{ay}: A {string.Join(" > ", mine.Take(30))}; B's puppet {string.Join(" > ", seen.Take(30))}");
+                    if (slides.Count == 0) continue;
+                    slid = true;
+                    var pslides = seen.Where(IsSlide).ToHashSet();
+                    double med = errs.Count > 0 ? errs.OrderBy(x => x).ElementAt(errs.Count / 2) : 0;
+                    Result($"slides {scene}: {cn} slide seen by B", slides.SetEquals(pslides) && errs.Count > 0 && med < 1.0,
+                        $"A slid with {string.Join(",", slides)}; B's puppet played {string.Join(",", pslides)}; position error while sliding median {med:F2} max {(errs.Count > 0 ? errs.Max() : 0):F2} ({errs.Count} samples)");
+                    break;
+                }
+                if (!slid) Log($"slides {scene} {cn}: no slide found from the spawn");
+                if (stop.id == 0) break;
+                // switch character at the stop (round 0), back (round 1)
+                uint sp = A.L.ObjPtr(stop.index);
+                float SF(uint addr) => BitConverter.Int32BitsToSingle((int)A.L.Mem.ReadU32(addr));
+                WaitControl(A, TimeSpan.FromSeconds(20));
+                A.L.Teleport(SF(sp + 0x18) - 0.6f, SF(sp + 0x1C) + 0.2f, SF(sp + 0x20)); A.L.PadOverride(true, 0, 0, 0); Thread.Sleep(2000);
+                Hold(A.L, GcR, 0, 0, 150); A.L.PadOverride(true, 0, 0, 0);
+                WaitFor(() => CharOf(A) != ch, 10);
+                A.L.PadOverride(false);
+                WaitControl(A, TimeSpan.FromSeconds(15));
+                Log($"slides {scene}: switched {cn} -> {CharNames[Math.Min(CharOf(A), 2u)]}");
+            }
+        }
+    }
+}
+
+
+static partial class SelfTest
+{
+    /// <summary>--phases linkdump [--dumpscene GL01] [--dumpmatch CANNON]: every matching object's event links (diagnostics).</summary>
+    static void LinkDumpPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        uint sc = PlayerState.SceneIdOf(a.GetValueOrDefault("dumpscene", "GL01"));
+        if (!GoTo(new List<Bot> { A }, sc)) return;
+        string match = a.GetValueOrDefault("dumpmatch", "CANNON");
+        foreach (var q in A.L.SceneObjects().Where(q => Nm(sc, q.id).Contains(match)))
+        {
+            uint p = A.L.ObjPtr(q.index);
+            int n = A.L.Mem.Read(p + 5, 1)[0];
+            uint links = A.L.Mem.ReadU32(p + 8);
+            var sb = new List<string>();
+            for (int k = 0; k < n && links >= 0x80000000; k++)
+            {
+                var l = A.L.Mem.Read(links + (uint)k * 0x20, 0x20);
+                ushort src = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(l), dst = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(l.AsSpan(2));
+                uint to = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(l.AsSpan(4));
+                float p0 = System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(l.AsSpan(8));
+                sb.Add($"on {src} -> {Nm(sc, to)} ev {dst} ({p0:0.##})");
+            }
+            Log($"links {Nm(sc, q.id)} type {q.type:X2} flags {A.L.ObjField(q.index, 4) & 0xFFFF:X}: {string.Join("; ", sb)}");
+        }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases lasso [--lassoscene BB02]: Sandy's lasso swing. A becomes Sandy at the scene's bus stop,
+    /// jumps up next to a swing point (SWING_WINDOW_*) and lassos it; B's puppet of A must play the same
+    /// swing animations and stay close. Tries a few inputs (lasso is a button in the air near a point).
+    /// </summary>
+    static void LassoPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        string scene = a.GetValueOrDefault("lassoscene", "BB02");
+        uint sc = PlayerState.SceneIdOf(scene);
+        if (!GoTo(pair, sc)) return;
+        foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(10));
+        var objs = A.L.SceneObjects();
+        var stop = objs.FirstOrDefault(q => Nm(sc, q.id).StartsWith("BUSSTOP_BUSSTOP"));
+        if (stop.id == 0) { Result($"lasso {scene}", false, "no bus stop"); return; }
+        uint sp = A.L.ObjPtr(stop.index);
+        float SF(uint addr) => BitConverter.Int32BitsToSingle((int)A.L.Mem.ReadU32(addr));
+        for (int t = 0; t < 2 && CharOf(A) != 2; t++)
+        {
+            WaitControl(A, TimeSpan.FromSeconds(15));
+            A.L.Teleport(SF(sp + 0x18) - 0.6f, SF(sp + 0x1C) + 0.2f, SF(sp + 0x20)); A.L.PadOverride(true, 0, 0, 0); Thread.Sleep(2000);
+            Hold(A.L, GcR, 0, 0, 150); A.L.PadOverride(true, 0, 0, 0);
+            WaitFor(() => CharOf(A) == 2, 10);
+            A.L.PadOverride(false);
+        }
+        if (CharOf(A) != 2) { Result($"lasso {scene}: become Sandy", false, $"character {CharOf(A)}"); return; }
+        WaitControl(A, TimeSpan.FromSeconds(15));
+        int slot = SlotOf(B, A.Name);
+        bool Swingy(string x) => x.Contains("Swing") || x.Contains("Lasso");
+        bool done = false;
+        foreach (var w in objs.Where(q => Nm(sc, q.id).StartsWith("SWING_WINDOW")).Take(4))
+        {
+            foreach (var (dx, dy, btn) in new[] { (2.5f, -3f, GcY), (2.5f, -3f, GcB), (0f, -4f, GcY), (3.5f, -2f, GcX) })
+            {
+                WaitControl(A, TimeSpan.FromSeconds(15));
+                var wp = (w.x, w.y, w.z);
+                { uint p = A.L.ObjPtr(w.index); var m = A.L.Mem.Read(A.L.Mem.ReadU32(A.L.Mem.ReadU32(p + 0x24) + 0x4C) + 0x30, 12); wp = (System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m), System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(4)), System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(8))); }
+                A.L.Teleport(wp.Item1 + dx, wp.Item2 + dy, wp.Item3);
+                B.L.Teleport(wp.Item1 + dx + 5, wp.Item2 + dy + 1, wp.Item3 + 5);
+                Thread.Sleep(300);
+                var mine = new List<string>(); var seen = new List<string>(); var errs = new List<double>();
+                var th = new Thread(() => { Hold(A.L, GcA, 0, 0, 150); Hold(A.L, 0, 0, 0, 200); Hold(A.L, btn, 0, 0, 200); Hold(A.L, 0, 0, 0, 2500); A.L.PadOverride(false); }) { IsBackground = true };
+                th.Start();
+                for (int k = 0; k < 75; k++)
+                {
+                    Thread.Sleep(40);
+                    string an = AnimDesc(A, LocalAnim(A)).Split(' ')[0], pn = AnimDesc(B, PuppetAnim(B, slot)).Split(' ')[0];
+                    if (mine.Count == 0 || mine[^1] != an) mine.Add(an);
+                    if (seen.Count == 0 || seen[^1] != pn) seen.Add(pn);
+                    if (Swingy(an) && A.L.TryReadLocal(out var ap) && B.L.PuppetPos(slot) is { } pp) errs.Add(Math.Sqrt(Sq(ap.X - pp.x) + Sq(ap.Y - pp.y) + Sq(ap.Z - pp.z)));
+                    if (errs.Count == 8) Shot(B, $"lasso-{scene}", true);
+                }
+                th.Join(5000);
+                Log($"lasso {scene} {Nm(sc, w.id)} at {dx},{dy} button {btn:X}: A {string.Join(" > ", mine)}; B's puppet {string.Join(" > ", seen)}");
+                var sw = mine.Where(Swingy).ToHashSet();
+                if (sw.Count == 0) continue;
+                var psw = seen.Where(Swingy).ToHashSet();
+                double med = errs.Count > 0 ? errs.OrderBy(x => x).ElementAt(errs.Count / 2) : 0;
+                Result($"lasso {scene}: Sandy swing seen by B", sw.SetEquals(psw) && med < 1.5,
+                    $"A swung with {string.Join(",", sw)}; B's puppet played {string.Join(",", psw)}; position error while swinging median {med:F2} max {(errs.Count > 0 ? errs.Max() : 0):F2}");
+                done = true;
+                break;
+            }
+            if (done) break;
+        }
+        if (!done) Result($"lasso {scene}: Sandy swing", false, "no input made A swing (see log)");
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases cannons [--cannonscene GL01]: cannons that start when a player walks into their zone
+    /// (hazard.c). A walks in: B's copy of the cannon must start too (its group timer runs in B's game);
+    /// A walks out: it stops. B inside while A leaves: it keeps running.
+    /// </summary>
+    static void CannonsPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        string scene = a.GetValueOrDefault("cannonscene", "GL01");
+        uint sc = PlayerState.SceneIdOf(scene);
+        if (!GoTo(pair, sc)) return;
+        foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(10));
+        Thread.Sleep(1000);
+        Result($"cannons {scene}: zones found", A.L.HzCount > 0 && A.L.HzCount == B.L.HzCount, $"hazard zones A {A.L.HzCount} B {B.L.HzCount}");
+        if (A.L.HzCount == 0) return;
+        var objs = A.L.SceneObjects();
+        A.L.TryReadLocal(out var spawn);
+        foreach (int c in new[] { 1, 2 })
+        {
+            var timer = objs.FirstOrDefault(q => Nm(sc, q.id) == $"CANNON_{c}_GROUP_TIMER");
+            if (timer.id == 0) continue;
+            byte TState(Bot X) => X.L.Mem.Read(X.L.ObjPtr(timer.index) + 0x14, 1)[0];
+            // candidate spots: the cannon's target markers and the cannon itself
+            var spots = new List<(float x, float y, float z)>();
+            foreach (var q in objs.Where(q => Nm(sc, q.id).StartsWith($"CANNON_{c}_MP_")))
+            {
+                uint pp = A.L.Mem.ReadU32(A.L.ObjPtr(q.index) + 0x14);
+                if (pp < 0x80000000) continue;
+                var m = A.L.Mem.Read(pp, 12);
+                spots.Add((System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m), System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(4)), System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(8))));
+            }
+            var dest = objs.FirstOrDefault(q => Nm(sc, q.id) == $"CANNON_DEST_{c}");
+            if (dest.id != 0) { spots.Add((dest.x + 3, dest.y + 1, dest.z)); spots.Add((dest.x - 3, dest.y + 1, dest.z)); spots.Add((dest.x, dest.y + 1, dest.z + 3)); spots.Add((dest.x, dest.y + 1, dest.z - 3)); }
+            B.L.Teleport(spawn.X, spawn.Y + 0.5f, spawn.Z);
+            bool inZone = false;
+            foreach (var sp in spots)
+            {
+                WaitControl(A, TimeSpan.FromSeconds(10));
+                A.L.Teleport(sp.x, sp.y + 1, sp.z);
+                if (WaitFor(() => TState(A) != 0, 2.5)) { inZone = true; Log($"cannons {scene}: cannon {c} zone entered at {sp.x:F1},{sp.y:F1},{sp.z:F1}"); break; }
+            }
+            if (!inZone) { Log($"cannons {scene}: cannon {c}: A never started it (spots {spots.Count})"); continue; }
+            bool bRuns = WaitFor(() => TState(B) == TState(A) && TState(B) != 0, 5);
+            Shot(B, $"cannon-{scene}-{c}", true);
+            Result($"cannons {scene}: cannon {c} starts for B when A walks in", bRuns, $"group timer state A {TState(A)} B {TState(B)}; B {(B.L.TryReadLocal(out var bp) ? $"{bp.X:F0},{bp.Z:F0}" : "?")} far away; zone events applied in B {B.L.HzApplied}");
+            // B walks in too, A leaves: it keeps running for both
+            B.L.TryReadLocal(out _);
+            A.L.TryReadLocal(out var ain);
+            B.L.Teleport(ain.X + 0.5f, ain.Y + 0.5f, ain.Z);
+            Thread.Sleep(2000);
+            A.L.Teleport(spawn.X, spawn.Y + 0.5f, spawn.Z);
+            Thread.Sleep(3000);
+            Result($"cannons {scene}: cannon {c} keeps going while B is still in", TState(A) != 0 && TState(B) != 0, $"group timer state A {TState(A)} B {TState(B)}");
+            // B leaves too: stops everywhere
+            B.L.Teleport(spawn.X + 2, spawn.Y + 0.5f, spawn.Z);
+            bool stopped = WaitFor(() => TState(A) == 0 && TState(B) == 0, 6);
+            Result($"cannons {scene}: cannon {c} stops when everyone left", stopped, $"group timer state A {TState(A)} B {TState(B)}");
+        }
     }
 }

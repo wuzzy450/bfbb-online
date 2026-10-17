@@ -102,13 +102,33 @@ bbol_colltrigger_stub:
     b CollTrigger_cont
 
 # zEntEvent(from, fromEvent, to, toEvent, param, widget, force) entry (was `stwu r1,-0x20(r1)`).
-# GiveShinyObjects (53) goes past bbol_shiny_event first; 0 back = drop the event.
+# GiveShinyObjects (53) goes past bbol_shiny_event first, EnterPlayer/ExitPlayer (5/6) past
+# bbol_event_filter (hazard zones); 0 back = drop the event.
     .globl bbol_event_stub
 bbol_event_stub:
     cmpwi 6, 53
     beq 1f
+    cmpwi 6, 5
+    beq 2f
+    cmpwi 6, 6
+    beq 2f
     stwu 1, -0x20(1)
     b ZEntEvent_cont
+2:
+    stwu 1, -0x30(1)
+    mflr 0
+    stw 0, 0x34(1)
+    stw 3, 0x08(1)
+    stw 4, 0x0C(1)
+    stw 5, 0x10(1)
+    stw 6, 0x14(1)
+    stw 7, 0x18(1)
+    stw 8, 0x1C(1)
+    stw 9, 0x20(1)
+    mr 3, 5
+    mr 4, 6
+    bl bbol_hazard_event
+    b 3f
 1:
     stwu 1, -0x30(1)
     mflr 0
@@ -121,6 +141,7 @@ bbol_event_stub:
     stw 8, 0x1C(1)
     stw 9, 0x20(1)
     bl bbol_shiny_event
+3:
     mr 12, 3
     lwz 3, 0x08(1)
     lwz 4, 0x0C(1)

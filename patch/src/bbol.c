@@ -44,6 +44,7 @@ typedef struct {
     u32 prevOn;
     u32 placed;     // has been snapped to the remote once
     u32 tilted;     // frames the puppet has been tipped over (a death or reset gone wrong)
+    u32 dead;       // frames the puppet has played a death animation while its player has control
 } CtxInfo;
 
 static Ctx ctx[MAX_REMOTE];
@@ -187,6 +188,12 @@ static void publish_local(void)
     L->sceneId = sc ? AT(u32, sc) : 0;
     L->inGame = (sc && fr) ? 1 : 0;
     L->character = AT(u32, GCURRENTPLAYER);
+    {   // diagnostics: our player's animation state (tests can't read globals mid puppet swap)
+        u8* m = (u8*)AT(u32, GLOBALS + G_ENT_MODEL);
+        u8* an = ((u32)m >= 0x80000000u) ? (u8*)AT(u32, m + MI_ANIM) : 0;
+        u8* sg = ((u32)an >= 0x80000000u) ? (u8*)AT(u32, an + 8) : 0;
+        mb.dbgRender[18] = ((u32)sg >= 0x80000000u) ? AT(u32, sg + 4) : 0;
+    }
     L->on = AT(u32, pad + PAD_ON);
     L->ax = AT(s8, pad + PAD_ANALOG1);
     L->ay = AT(s8, pad + PAD_ANALOG1 + 1);
@@ -295,6 +302,11 @@ static f32 dist2(const f32* a, const f32* b) { f32 d = 0; for (int k = 0; k < 3;
 
 static int name_is(const char* a, const char* b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
 static int name_starts(const char* a, const char* p) { while (*p && *a == *p) { a++; p++; } return *p == 0; }
+static int name_has(const char* s, const char* p)
+{
+    for (; *s; s++) if (name_starts(s, p)) return 1;
+    return 0;
+}
 static int pvp_attack_name(const char* n)
 {
     return name_is(n, "Melee01") || name_starts(n, "Karate") || name_starts(n, "Chop") || name_starts(n, "Smash")
@@ -447,6 +459,26 @@ static void puppet_update(int i, void* scene, f32 dt)
             in->tilted = 0;
         }
     } else in->tilted = 0;
+
+    // a death (goo, pit...) plays here too, but only the teammate's own game respawns them: a puppet
+    // still in a death animation while its player has control again is reset (seen: stuck in
+    // GooDefeated after the teammate had respawned and walked off)
+    {
+        u8* an = mdl ? (u8*)AT(u32, mdl + MI_ANIM) : 0;
+        u8* sg = ((u32)an >= 0x80000000u) ? (u8*)AT(u32, an + 8) : 0;
+        u8* st = ((u32)sg >= 0x80000000u) ? (u8*)AT(u32, sg + 4) : 0;
+        const char* nm = ((u32)st >= 0x80000000u) ? (const char*)AT(u32, st + 4) : 0;
+        int dying = nm && ((u32)nm >= 0x80000000u) && (name_has(nm, "Defeated") || name_starts(nm, "Death"));
+        if (dying && !(r->flags & RF_NOINPUT)) {
+            if (++in->dead > 30) {
+                zEntPlayerReset((void*)(GLOBALS + G_PLAYER));
+                AT(u8, GLOBALS + G_PLAYER + 0x18) |= 1;
+                in->placed = 0;
+                in->dead = 0;
+                mb.dbgRender[19]++;
+            }
+        } else in->dead = 0;
+    }
 
     store(&ctx[i], SW_ALL);
     load(&tmp, SW_ALL);
@@ -701,6 +733,8 @@ void bbol_player_update(void* ent, void* scene, f32 dt)
     if (!(mb.flags & 1024u)) objsync_frame();   // 1024: diagnostics, no object sync
     arena_check(3);
     npcsync_frame();
+    platsync_frame();
+    hazard_frame();
     arena_check(4);
     handle_warp();
     arena_check(5);

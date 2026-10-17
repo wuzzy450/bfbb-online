@@ -42,6 +42,16 @@ public static class Mb
     public const uint OPayOutSeq = 0x8670, OPayOutId = 0x8674, OPayOutEvent = 0x8678, OPayOutScene = 0x867C,
         OPayInHead = 0x8680, OPayInTail = 0x8684, OPayIn = 0x8688;
     public const int PayRing = 16;
+    // moving platforms (platsync.c)
+    public const uint OPlatOwner = 0x8708, OPlatOutSeq = 0x870C, OPlatOutCount = 0x8710, OPlatOutScene = 0x8714,
+        OPlatInSeq = 0x8718, OPlatInCount = 0x871C, OPlatInScene = 0x8720, OPlatApplied = 0x8724,
+        OPlatOut = 0x8728, OPlatIn = 0xB728;
+    public const int PlatMax = 64, PlatStateSize = 0xC0;
+    public const uint OTalkNpc = 0xE728;
+    // hazard zones (hazard.c)
+    public const uint OHzCount = 0xE72C, OHzOutHead = 0xE730, OHzOutTail = 0xE734, OHzOut = 0xE738,
+        OHzInHead = 0xE7B8, OHzInTail = 0xE7BC, OHzIn = 0xE7C0, OHzApplied = 0xE880;
+    public const int HzRing = 16;
     /// <summary>The patch's scratch serializer slot; never part of the world.</summary>
     public const uint ScratchTag = 0x42424F53; // 'BBOS'
     public const int LocalSize = 0x70, RemoteSize = 0x70;

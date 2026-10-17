@@ -31,6 +31,8 @@ GAME_SYMBOLS = {
     "xPadUpdate": 0x80035FC4,
     "zGameSetupPlayer": 0x800993A8,
     "zEntPlayerReset": 0x8007A120,
+    "zEntPlayer_MoveInfo": 0x8007685C,
+    "zEntPlayer_DamageNPCKnockBack": 0x800762A8,   # (xBase* src, U32 damage, xVec3* from)
     "zSceneSwitch": 0x800B23F8,
     "xShadowManager_Add": 0x80047654,
     "XSER_get_client": 0x80043968,
@@ -216,7 +218,7 @@ def build_blob():
     for k in ("BBOL_XFER_PROBE",):   # diagnostics: DMA watch (bbol_xfer_check)
         if os.environ.get(k):
             cflags.append("-D" + k)
-    for f in ("bbol.c", "objsync.c", "cutscene.c", "npcsync.c", "stubs.S"):
+    for f in ("bbol.c", "objsync.c", "cutscene.c", "npcsync.c", "platsync.c", "hazard.c", "stubs.S"):
         o = os.path.join(OUT, f + ".o")
         zig("cc", *cflags, "-c", os.path.join(SRC, f), "-o", o)
         objs.append(o)

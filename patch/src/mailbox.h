@@ -72,6 +72,15 @@ typedef struct {
 
 #define NPC_MAX 128
 #define PAY_RING 16
+#define PLAT_MAX 64
+#define HZ_RING 16
+typedef struct {
+    u16 index;           // 0x00 index in zScene::base
+    u16 flags;           // 0x02 1 valid
+    u32 id;              // 0x04 asset id (checked before applying)
+    u8  st[0x78];        // 0x08 zPlatform 0xD8..0x150: motion (xEntMotion), state, plat_flags, tmr, ctr
+    f32 mat[16];         // 0x80 model matrix
+} PlatState;             // 0xC0
 typedef struct {
     u16 index;           // 0x00 index in zScene::base
     u16 flags;           // 0x02 1 valid, 2 boss, 4 hp/round valid; high byte: sender's party id
@@ -203,6 +212,27 @@ typedef struct {
     u32 payInHead;               // 0x8680 bridge bumps after filling payIn[head % PAY_RING]
     u32 payInTail;               // 0x8684 patch
     u32 payIn[PAY_RING][2];      // 0x8688 (object id, event) to replay in the current scene
+    // moving platforms (platsync.c): the scene's owner publishes their motion, the others follow
+    u32 platOwner;               // 0x8708 bridge: 1 = our game owns this scene's platforms
+    u32 platOutSeq;              // 0x870C patch bumps after filling platOut
+    u32 platOutCount;            // 0x8710
+    u32 platOutScene;            // 0x8714
+    u32 platInSeq;               // 0x8718 bridge bumps after filling platIn
+    u32 platInCount;             // 0x871C
+    u32 platInScene;             // 0x8720
+    u32 platApplied;             // 0x8724 diagnostics: platform states taken over (total)
+    PlatState platOut[PLAT_MAX]; // 0x8728
+    PlatState platIn[PLAT_MAX];  // 0xB728
+    u32 talkNpc;                 // 0xE728 the conversation reported in talkId is with an NPC (signs aren't)
+    // hazard zones (hazard.c): our player entering/leaving a cannon zone, and teammates' (with party id)
+    u32 hzCount;                 // 0xE72C hazard zones found in the scene
+    u32 hzOutHead;               // 0xE730 patch
+    u32 hzOutTail;               // 0xE734 bridge
+    u32 hzOut[HZ_RING][2];       // 0xE738 (trigger id, 5 enter / 6 leave)
+    u32 hzInHead;                // 0xE7B8 bridge
+    u32 hzInTail;                // 0xE7BC patch
+    u32 hzIn[HZ_RING][3];        // 0xE7C0 (trigger id, event, sender's party id)
+    u32 hzApplied;               // 0xE880 diagnostics
 } Mailbox;
 
 extern volatile Mailbox mb;
@@ -213,6 +243,8 @@ void cutscene_frame(void);
 void talk_frame(void);
 u32 objsync_hashes(void);
 void npcsync_frame(void);
+void platsync_frame(void);
+void hazard_frame(void);
 void objsync_relay_links(void* obj, u32 event);
 
 // Layout is mirrored in shared/Mailbox.cs; these catch accidental drift.
@@ -235,6 +267,14 @@ _Static_assert(BBOL_OFF(npcRank) == 0x463C, "npcRank");
 _Static_assert(BBOL_OFF(npcOut) == 0x4670, "npcOut");
 _Static_assert(BBOL_OFF(payOutSeq) == 0x8670, "payOutSeq");
 _Static_assert(BBOL_OFF(payIn) == 0x8688, "payIn");
+_Static_assert(sizeof(PlatState) == 0xC0, "PlatState");
+_Static_assert(BBOL_OFF(platOwner) == 0x8708, "platOwner");
+_Static_assert(BBOL_OFF(platOut) == 0x8728, "platOut");
+_Static_assert(BBOL_OFF(platIn) == 0xB728, "platIn");
+_Static_assert(BBOL_OFF(talkNpc) == 0xE728, "talkNpc");
+_Static_assert(BBOL_OFF(hzOut) == 0xE738, "hzOut");
+_Static_assert(BBOL_OFF(hzIn) == 0xE7C0, "hzIn");
+_Static_assert(BBOL_OFF(hzApplied) == 0xE880, "hzApplied");
 _Static_assert(BBOL_OFF(outHead) == 0x380, "outHead");
 _Static_assert(BBOL_OFF(out) == 0x3C0, "out");
 _Static_assert(BBOL_OFF(in) == 0x3C0 + OBJ_RING * 0x100, "in");

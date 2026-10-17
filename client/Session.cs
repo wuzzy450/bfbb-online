@@ -266,6 +266,17 @@ public sealed class Session : IDisposable
                     }
                 }
                 break;
+            case "hz":
+                // a teammate in our scene entered / left a cannon zone
+                if (o["id"]?.GetValue<uint>() is uint hzid && o["ev"]?.GetValue<uint>() is uint hzev && o["from"]?.GetValue<int>() is int hzfrom
+                    && link != null && link.TryReadLocal(out var meH) && PlayerState.SceneName(meH.SceneId) == o["s"]?.GetValue<string>())
+                    link.WriteHazardIn(hzid, hzev, (uint)hzfrom + 1);
+                break;
+            case "pf":
+                // the scene owner's moving platforms
+                if (o["d"]?.GetValue<string>() is string pfd && o["s"]?.GetValue<string>() is string pfs)
+                    lock (platGate) platIn = (PlayerState.SceneIdOf(pfs), Convert.FromBase64String(pfd));
+                break;
             case "pay":
                 // a teammate paid (a shiny door...): replay what that set off, now or when we get there
                 if (o["s"]?.GetValue<string>() is string pscene && o["id"]?.GetValue<uint>() is uint pid
@@ -303,13 +314,15 @@ public sealed class Session : IDisposable
                 Notice?.Invoke(o["text"]?.GetValue<string>() ?? "");
                 break;
             case "talk":
-                // a teammate in our scene started a conversation: offer to watch along
-                if (cfg.WatchAlong && o["id"]?.GetValue<uint>() is uint tid && link != null
+                // a teammate in our scene started a conversation: offer to watch along (NPC talks only).
+                // Always passed to the game: it closes the copy the teammate's puppet started here.
+                if (o["id"]?.GetValue<uint>() is uint tid && link != null
                     && link.TryReadLocal(out var meT) && PlayerState.SceneName(meT.SceneId) == o["s"]?.GetValue<string>())
                 {
                     string who = o["name"]?.GetValue<string>() ?? "A teammate";
-                    log($"{who} is talking to someone: watch along? (D-pad Up yes, Down no)");
-                    link.OfferTalk(tid, $"{(who.Length > 12 ? who[..12] : who)}: watch along? Up yes, Down no");
+                    bool offer = cfg.WatchAlong && (o["npc"]?.GetValue<bool>() ?? true);
+                    if (offer) log($"{who} is talking to someone: watch along? (D-pad Up yes, Down no)");
+                    link.OfferTalk(tid, offer ? $"{(who.Length > 12 ? who[..12] : who)}: watch along? Up yes, Down no" : "");
                 }
                 break;
         }
@@ -611,6 +624,12 @@ public sealed class Session : IDisposable
         UpdatePuppets(me.SceneId);
         SyncObjects(me.SceneId);
         SyncNpcs(me.SceneId);
+        SyncPlats(me.SceneId);
+        foreach (var (hid, hev) in link.ReadHazardOut())
+        {
+            var hm = Proto.Msg("hz"); hm["s"] = PlayerState.SceneName(me.SceneId); hm["id"] = hid; hm["ev"] = hev;
+            Send(hm);
+        }
         uint cs = link!.CutsceneSeq;
         if (cs != lastCutsceneSeq)
         {
@@ -645,7 +664,7 @@ public sealed class Session : IDisposable
             var (id, sc) = link.LastTalk;
             if (!first && joined)
             {
-                var m = Proto.Msg("talk"); m["s"] = PlayerState.SceneName(sc); m["id"] = id;
+                var m = Proto.Msg("talk"); m["s"] = PlayerState.SceneName(sc); m["id"] = id; m["npc"] = link.LastTalkNpc;
                 Send(m);
             }
         }
@@ -936,6 +955,41 @@ public sealed class Session : IDisposable
     /// Our game's NPC poses out (only those that moved, everything once a second), the poses other
     /// games drive in. A pose not refreshed for 1.5 s is dropped (that NPC is no longer theirs).
     /// </summary>
+    readonly object platGate = new();
+    (uint scene, byte[] raw)? platIn;
+    uint lastPlatOutSeq;
+
+    /// <summary>
+    /// Moving platforms: the lowest party id in a scene owns its platforms' motion and sends it
+    /// (every 30 frames) to the others there, whose games take over platforms that drifted.
+    /// </summary>
+    void SyncPlats(uint scene)
+    {
+        if (!joined || scene == 0) return;
+        var now = DateTime.UtcNow;
+        bool owner;
+        lock (gate) owner = !peers.Any(kv => kv.Key < myId && kv.Value.State.SceneId == scene && now - kv.Value.Updated < TimeSpan.FromSeconds(3));
+        if (link!.PlatOwner != owner) link.PlatOwner = owner;
+        if (owner)
+        {
+            uint seq = link.PlatOutSeq;
+            if (seq == lastPlatOutSeq) return;
+            lastPlatOutSeq = seq;
+            bool anyoneHere;
+            lock (gate) anyoneHere = peers.Values.Any(p => p.State.SceneId == scene && now - p.Updated < TimeSpan.FromSeconds(3));
+            var (sc, raw) = link.ReadPlatOut();
+            if (!anyoneHere || sc != scene || raw.Length == 0) return;
+            var m = Proto.Msg("pf");
+            m["s"] = PlayerState.SceneName(scene);
+            m["d"] = Convert.ToBase64String(raw);
+            Send(m);
+            return;
+        }
+        (uint scene, byte[] raw)? got;
+        lock (platGate) { got = platIn; platIn = null; }
+        if (got is { } g && g.scene == scene) link.WritePlatIn(scene, g.raw);
+    }
+
     void SyncNpcs(uint scene)
     {
         if (!joined) return;

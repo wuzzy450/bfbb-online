@@ -188,7 +188,9 @@ void talk_frame(void)
         // only conversations that hold the player are offered (not signs and hints); the hold may
         // come a frame after the talk box opens, so keep looking until it ends
         int holds = (AT(u32, GLOBALS + G_CONTROLOFF) & CONTROL_OWNER_TALK) != 0;
-        if (id && id != startedTalk && sc && holds && npc_near(sc, 6.0f)) {
+        if (id && id != startedTalk && sc && holds) {
+            // reported even for signs: a teammate's game closes it if our puppet started it there
+            mb.talkNpc = npc_near(sc, 6.0f);
             mb.talkId = id;
             mb.talkScene = AT(u32, sc);
             mb.talkSeq = mb.talkSeq + 1;
@@ -215,6 +217,9 @@ void talk_frame(void)
         mb.offerResult = 3;
         return;
     }
+    // no text: the teammate's talk isn't one to watch (a sign, or watch-along is off); it was only
+    // passed on so the copy their puppet started here gets closed (above)
+    if (!mb.offerText[0]) { mb.offerResult = 3; return; }
     for (int k = 0; k < 63; k++) promptText[k] = mb.offerText[k];
     promptText[63] = 0;
     promptBox = 1;

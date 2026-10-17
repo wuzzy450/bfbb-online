@@ -264,6 +264,7 @@ public sealed class GameLink : IDisposable
     // ---- conversations ---------------------------------------------------------------------
     public uint TalkSeq => U(Mb.OTalkSeq);
     public (uint id, uint scene) LastTalk => (U(Mb.OTalkId), U(Mb.OTalkScene));
+    public bool LastTalkNpc => U(Mb.OTalkNpc) != 0;
     /// <summary>The talk box running now (0 = none).</summary>
     public uint ActiveTalk() { uint a = Mem.ReadU32(0x8031B328); return a >= 0x80000000 ? Mem.ReadU32(a) : 0; }
 
@@ -464,6 +465,55 @@ public sealed class GameLink : IDisposable
     }
 
     public uint NpcOutSeq => U(Mb.ONpcOutSeq);
+
+    public uint HzCount => U(Mb.OHzCount);
+    public uint HzApplied => U(Mb.OHzApplied);
+
+    /// <summary>Our player entering (5) / leaving (6) hazard zones since the last call.</summary>
+    public List<(uint id, uint ev)> ReadHazardOut()
+    {
+        var list = new List<(uint, uint)>();
+        uint head = U(Mb.OHzOutHead), tail = U(Mb.OHzOutTail);
+        if (head - tail > Mb.HzRing) tail = head - Mb.HzRing;
+        for (; tail != head; tail++)
+        {
+            uint o = Mb.OHzOut + (tail % Mb.HzRing) * 8;
+            list.Add((U(o), U(o + 4)));
+        }
+        W(Mb.OHzOutTail, head);
+        return list;
+    }
+
+    /// <summary>A teammate (party id + 1) entered/left a hazard zone.</summary>
+    public void WriteHazardIn(uint id, uint ev, uint rank)
+    {
+        uint head = U(Mb.OHzInHead);
+        if (head - U(Mb.OHzInTail) >= Mb.HzRing) return;
+        uint o = Mb.OHzIn + (head % Mb.HzRing) * 12;
+        W(o, id); W(o + 4, ev); W(o + 8, rank);
+        W(Mb.OHzInHead, head + 1);
+    }
+
+    public bool PlatOwner { get => U(Mb.OPlatOwner) != 0; set => W(Mb.OPlatOwner, value ? 1u : 0u); }
+    public uint PlatOutSeq => U(Mb.OPlatOutSeq);
+    public uint PlatApplied => U(Mb.OPlatApplied);
+
+    /// <summary>Our moving platforms' states (owner only): scene + raw PlatState records.</summary>
+    public (uint scene, byte[] raw) ReadPlatOut()
+    {
+        int n = (int)Math.Min(U(Mb.OPlatOutCount), (uint)Mb.PlatMax);
+        return (U(Mb.OPlatOutScene), n == 0 ? Array.Empty<byte>() : Mem.Read(mb + Mb.OPlatOut, n * Mb.PlatStateSize));
+    }
+
+    /// <summary>Hands the game the scene owner's platform states.</summary>
+    public void WritePlatIn(uint scene, byte[] raw)
+    {
+        int n = Math.Min(raw.Length / Mb.PlatStateSize, Mb.PlatMax);
+        if (n > 0) Mem.TryWrite(mb + Mb.OPlatIn, raw.AsSpan(0, n * Mb.PlatStateSize).ToArray());
+        W(Mb.OPlatInScene, scene);
+        W(Mb.OPlatInCount, (uint)n);
+        W(Mb.OPlatInSeq, U(Mb.OPlatInSeq) + 1);
+    }
     public uint NpcApplied => U(Mb.ONpcApplied);
 
     /// <summary>The poses of the NPCs our game drives: scene + raw 32-byte NpcPose records.</summary>

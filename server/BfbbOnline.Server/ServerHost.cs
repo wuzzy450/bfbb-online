@@ -18,6 +18,8 @@ public sealed class ServerOptions
     /// <summary>Where party worlds are kept (parties/&lt;name&gt;/world.json).</summary>
     public string DataDir { get; set; } = "data";
     public SimOptions Sims { get; set; } = new();
+    /// <summary>PvP: players' attacks hit and knock back teammates and cost them health.</summary>
+    public bool Pvp { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public Action<string>? Log { get; set; }
 }
@@ -148,6 +150,8 @@ public sealed class ServerHost : IDisposable
             case "chat": Chat(p, o); break;
             case "obj": Obj(p, o); break;
             case "np": NpcPoses(p, o); break;
+            case "pf": NpcPoses(p, o); break;
+            case "hz": NpcPoses(p, o); break;   // hazard zone enter/leave: relayed to the scene   // moving platforms: relayed to the scene the same way
             case "objsync": ObjSync(p, o); break;
             case "cs": Cutscene(p, o); break;
             case "talk": Talk(p, o); break;
@@ -185,7 +189,7 @@ public sealed class ServerHost : IDisposable
             if (Regex.IsMatch(c, "^#[0-9a-fA-F]{6}$")) p.Color = c;
         }
         var w = Proto.Msg("welcome");
-        w["id"] = p.Id; w["name"] = p.Name; w["version"] = Proto.Version;
+        w["id"] = p.Id; w["name"] = p.Name; w["version"] = Proto.Version; w["pvp"] = opt.Pvp;
         w["parties"] = PartyList();
         p.Conn.Send(w);
         Log($"{p.Name} connected from {p.Conn.Remote}");

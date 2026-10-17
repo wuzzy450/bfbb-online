@@ -60,6 +60,12 @@ static partial class SelfTest
         Phase("showcase", () => ShowcasePhase(bots, a));
         Phase("pvp", () => PvpPhase(bots, a));
         Phase("chars", () => CharsPhase(bots, a));
+        Phase("plats", () => PlatsPhase(bots, a));
+        Phase("socks", () => SocksPhase(bots, a));
+        Phase("slides", () => SlidesPhase(bots, a));
+        Phase("linkdump", () => LinkDumpPhase(bots, a));
+        Phase("lasso", () => LassoPhase(bots, a));
+        Phase("cannons", () => CannonsPhase(bots, a));
         Phase("loadstorm", () => LoadStormPhase(bots, a));
         Phase("racediag", () => RaceDiag(bots, a.GetValueOrDefault("raceobj", "GOLDENSPAT_PICKUP_02")));
     }
@@ -130,6 +136,8 @@ static partial class SelfTest
     {
         [0x4E544230] = (0x2D4, 0x2D8), [0x4E544231] = (0x2B8, 0x2BC), [0x4E544830] = (0x2C4, 0x2BC),
         [0x4E544831] = (0x2C4, 0x2C8), [0x4E544832] = (0x2B8, 0x2BC),
+        [0x4E544233] = (0x2C4, 0x2C8),   // Robo-SpongeBob
+        [0x4E544234] = (0x698, 0),       // Robo-Plankton: active_territory counts UP as fuses blow (a hit = +1)
     };
 
     /// <summary>
@@ -146,13 +154,19 @@ static partial class SelfTest
             if (!GoTo(bots, sc)) continue;
             Thread.Sleep(3000);
             foreach (var bt in bots) WaitControl(bt, TimeSpan.FromSeconds(60));
-            var boss = A.L.SceneObjects().Where(o => o.type == 0x2B && BossHp.ContainsKey(A.L.Mem.ReadU32(A.L.ObjPtr(o.index) + 0xF4))).ToList();
-            if (boss.Count == 0) { Result($"boss sync ({name})", false, "no boss with known hit points in this scene"); continue; }
+            bool IsBoss(uint t) => (t >> 8 & 0xFFFF) is 0x5442 or 0x5448;   // NTB* / NTH*
+            var all = A.L.SceneObjects().Where(o => o.type == 0x2B && IsBoss(A.L.Mem.ReadU32(A.L.ObjPtr(o.index) + 0xF4))).ToList();
+            Log($"bosses in {name}: " + string.Join(", ", all.Select(o => $"{Nm(sc, o.id)} {System.Text.Encoding.ASCII.GetString(BitConverter.GetBytes(A.L.Mem.ReadU32(A.L.ObjPtr(o.index) + 0xF4)).Reverse().ToArray())}")));
+            var boss = all.Where(o => BossHp.ContainsKey(A.L.Mem.ReadU32(A.L.ObjPtr(o.index) + 0xF4))).ToList();
+            bool hpKnown = boss.Count > 0;
+            if (!hpKnown) boss = all;
+            if (boss.Count == 0) { Log($"boss sync ({name}): no boss in this scene"); continue; }
             var o = boss[0];
             uint ptr = A.L.ObjPtr(o.index);
-            var (hpo, ro) = BossHp[A.L.Mem.ReadU32(ptr + 0xF4)];
-            int Hp(Bot b) => (int)b.L.Mem.ReadU32(ptr + hpo);
-            int Round(Bot b) => (int)b.L.Mem.ReadU32(ptr + ro);
+            var (hpo, ro) = hpKnown ? BossHp[A.L.Mem.ReadU32(ptr + 0xF4)] : (0u, 0u);
+            bool up = A.L.Mem.ReadU32(ptr + 0xF4) == 0x4E544234;
+            int Hp(Bot b) => hpo == 0 ? 0 : (int)b.L.Mem.ReadU32(ptr + hpo);
+            int Round(Bot b) => ro == 0 ? 0 : (int)b.L.Mem.ReadU32(ptr + ro);
             uint Anim(Bot b) { uint m = b.L.Mem.ReadU32(ptr + 0x24); uint pl = m >= 0x80000000 ? b.L.Mem.ReadU32(m + 0x0C) : 0; uint si = pl >= 0x80000000 ? b.L.Mem.ReadU32(pl + 8) : 0; return si >= 0x80000000 ? b.L.Mem.ReadU32(si + 4) : 0; }
             uint Goal(Bot b) { uint psy = b.L.Mem.ReadU32(ptr + 0x228); if (psy < 0x80000000) return 0; int top = (int)b.L.Mem.ReadU32(psy + 0x38); if (top < 0 || top > 4) return 0; uint g = b.L.Mem.ReadU32(psy + 0x10 + 4 * (uint)top); return g >= 0x80000000 ? b.L.Mem.ReadU32(g + 0x1C) : 0; }
             string G(uint g) => g == 0 ? "-" : System.Text.Encoding.ASCII.GetString(BitConverter.GetBytes(g).Reverse().ToArray());
@@ -174,6 +188,17 @@ static partial class SelfTest
             bool follow = posOk >= samples * 0.8 && animOk >= samples * 0.6 && goalOk >= samples * 0.6 && hpOk == samples;
             Result($"boss follows ({name})", follow, $"{Nm(sc, o.id)}: position within 1.5 in {posOk}/{samples} samples (worst {worst:0.0}), same animation {animOk}/{samples}, same goal {goalOk}/{samples} (A {G(Goal(A))}, B {G(Goal(B))}), same health {hpOk}/{samples} (hp {Hp(A)}, round {Round(A)})");
             // 2. a hit in B's game: B takes the boss over, everyone loses the same hit point
+            if (!hpKnown) { Log($"boss hit ({name}): hit points of {G(A.L.Mem.ReadU32(ptr + 0xF4))} unknown, follow check only"); continue; }
+            if (up)
+            {
+                int t0 = Hp(A);
+                B.L.Mem.WriteU32(ptr + hpo, (uint)(t0 + 1));
+                bool ok1 = WaitFor(() => Hp(A) == t0 + 1 && Hp(B) == t0 + 1, 5);
+                Thread.Sleep(2000);
+                bool st1 = Hp(A) == t0 + 1 && Hp(B) == t0 + 1;
+                Result($"boss hit ({name})", ok1 && st1, $"{G(A.L.Mem.ReadU32(ptr + 0xF4))} fuse stage {t0}: B blew one -> A {(ok1 ? "followed" : "DID NOT")}{(st1 ? "" : " (then it WENT BACK)")}; now A {Hp(A)} B {Hp(B)}");
+                continue;
+            }
             int hp0 = Hp(A);
             if (hp0 <= 1) { Result($"boss hit ({name})", false, $"boss hit points {hp0}: nothing to take away"); continue; }
             B.L.Mem.WriteU32(ptr + hpo, (uint)(hp0 - 1));
