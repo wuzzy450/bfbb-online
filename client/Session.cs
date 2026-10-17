@@ -291,6 +291,10 @@ public sealed class Session : IDisposable
                         set.Add((pid, pev));
                     }
                 break;
+            case "dupsock":
+                // a teammate grabbed the same sock at the same instant: our +1 goes back (for everyone)
+                lock (invIn) dupSocks++;
+                break;
             case "spat":
                 // the party's spatula count (the server counts each spatula once)
                 if (o["n"]?.GetValue<uint>() is uint sp) partySpatulas = sp;
@@ -856,12 +860,25 @@ public sealed class Session : IDisposable
             if (d < 0 && NeverDecrease.Contains(i)) { restore.Add(i); continue; }
             arr.Add(new JsonArray(i, (int)d));
             lastCounters[i] = cur[i];
+            if (d > 0 && i >= 3 && i < 33 && (i - 3) % 2 == 0) lastSockLevel = i;
             if (Verbose) log($"inv out counter {i} {d:+#;-#;0}");
         }
         if (arr.Count > 0) { var m = Proto.Msg("inv"); m["d"] = arr; Send(m); }
         if (restore.Count > 0) { SetCounters(restore, "the game lowered a counter that never goes down"); return; }
         lock (invIn)
         {
+            if (dupSocks > 0 && arr.Count == 0)
+            {
+                // our own +1 is already reported: send the -1 to the party and take it from our game
+                var undo = new JsonArray();
+                for (; dupSocks > 0; dupSocks--)
+                {
+                    undo.Add(new JsonArray(2, -1)); invIn.Add((2, -1));
+                    if (lastSockLevel > 0) { undo.Add(new JsonArray(lastSockLevel, -1)); invIn.Add((lastSockLevel, -1)); }
+                }
+                var um = Proto.Msg("inv"); um["d"] = undo; Send(um);
+                log($"inv: sock grabbed together with a teammate, counted once ({undo.ToJsonString()})");
+            }
             if (invIn.Count > 0 && link.TryAddCounters(invIn))
             {
                 if (Verbose) foreach (var (i, d) in invIn) log($"inv in  counter {i} {d:+#;-#;0}");
@@ -893,6 +910,8 @@ public sealed class Session : IDisposable
     }
 
     uint[]? flushed;   // our game's counters when we last reported before a load
+    int dupSocks;       // "dupsock" from the server not yet undone (guarded by invIn)
+    int lastSockLevel;  // counter index of the level sock count our game last raised
 
     /// <summary>Sets these counters in the game to <c>lastCounters</c> (absolute), and lets them settle.</summary>
     void SetCounters(IEnumerable<int> which, string why)

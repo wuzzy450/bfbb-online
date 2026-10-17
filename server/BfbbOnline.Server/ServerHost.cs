@@ -55,6 +55,23 @@ public sealed class Party
     /// <summary>True the first time this spatula pickup is seen collected.</summary>
     public bool FirstSpatula(uint scene, uint id) { lock (spatulas) return spatulas.Add((scene, id)); }
 
+    readonly Dictionary<(uint, uint), DateTime> socks = new();
+
+    /// <summary>
+    /// A sock pickup reported collected again within 10 s of the first report: two games grabbed the
+    /// same sock at the same instant (each added +1 to the shared counters).
+    /// </summary>
+    public bool DuplicateSock(uint scene, uint id)
+    {
+        lock (socks)
+        {
+            var now = DateTime.UtcNow;
+            if (socks.TryGetValue((scene, id), out var first)) return now - first < TimeSpan.FromSeconds(10);
+            socks[(scene, id)] = now;
+            return false;
+        }
+    }
+
     public void StoreObj(ObjState o)
     {
         lock (objects)
@@ -316,6 +333,12 @@ public sealed class ServerHost : IDisposable
         RelayObj(party, st, p);
         Sims.ObjectChanged(party, st);
         CountSpatula(party, st);
+        // the same sock grabbed in two games at once: the later one takes its +1 back (party-wide)
+        if (st.Kind == ObjState.KindSock && st.PickupCollected && party.DuplicateSock(st.Scene, st.Id))
+        {
+            p.Conn.Send(Proto.Msg("dupsock"));
+            Log($"{party.Name}: {p.Name} grabbed sock {st.Id:X8} in {PlayerState.SceneName(st.Scene)} together with a teammate: counted once");
+        }
     }
 
     /// <summary>

@@ -416,16 +416,57 @@ static void report(u32 i, u8* b, u32 bits)
     mb.outHead = head + 1;
 }
 
+// teammates' pickup states that arrived while our copy was flying to our player: applied once it
+// settles, unless it ended up collected here too (a grab cut short by a death or warp would
+// otherwise leave the pickup up here and gone for the teammate)
+#define DEFER_MAX 8
+static ObjRec deferred[DEFER_MAX];
+static u32 deferredCount;
+
+static void apply_one(volatile ObjRec* r);
+
+static void apply_deferred(void)
+{
+    u32 n = deferredCount, keep = 0;
+    deferredCount = 0;
+    for (u32 k = 0; k < n; k++) {
+        u32 count;
+        u8* b = scene_base(deferred[k].index, &count);
+        if (deferred[k].scene != mb.objScene || !b || AT(u32, b) != deferred[k].id) continue;
+        if (pickup_busy(b)) { if (keep != k) deferred[keep] = deferred[k]; keep++; continue; }
+        if (!(AT(u32, b + PICKUP_STATE) & 0x0C)) { apply_one(&deferred[k]); mb.dbgRender[8]++; }   // [8] held states applied
+    }
+    deferredCount += keep;
+}
+
 static void apply_in(void)
 {
-    u32 count;
+    if (deferredCount) apply_deferred();
     while (mb.inTail != mb.inHead) {
         volatile ObjRec* r = &mb.in[mb.inTail % OBJ_RING];
+        // our own conversation still running: its task box changes when it ends, not now
+        u32 c0;
+        u8* b0 = scene_base(r->index, &c0);
+        if (b0 && r->scene == mb.objScene && b0[4] == 0x35 && r->type == 0x35 && AT(u32, TALK_SHARED + 8)) break;
+        if (b0 && r->scene == mb.objScene && AT(u32, b0) == r->id && pickup_busy(b0) && deferredCount < DEFER_MAX) {
+            u32 n = (r->bits + 7) / 8 + 0x10;
+            memcpy(&deferred[deferredCount++], (void*)r, n > sizeof(ObjRec) ? sizeof(ObjRec) : n);
+            mb.dbgRender[4]++;   // [4] teammates' pickup states held while ours was flying
+            mb.inTail = mb.inTail + 1;
+            continue;
+        }
+        apply_one(r);
+        mb.inTail = mb.inTail + 1;
+    }
+}
+
+static void apply_one(volatile ObjRec* r)
+{
+    u32 count;
+    {
         u8* b = scene_base(r->index, &count);
         if (r->scene == mb.objScene && b && AT(u32, b) == r->id && b[4] == r->type
             && r->bits && r->bits <= OBJ_DATA * 8 && !(r->index < OBJ_MAX && personal[r->index] >= 3)) {
-            // our own conversation still running: its task box changes when it ends, not now
-            if (b[4] == 0x35 && AT(u32, TALK_SHARED + 8)) break;
             if (b[4] == 0x1B) {
                 // a teammate broke this (or it came back): what its Destroy / Reset events do
                 int broken = AT(u32, b + DOBJ_STATE) == DOBJ_DESTROYED, want = r->data[3] & 1;
@@ -436,8 +477,7 @@ static void apply_in(void)
                 mem[0] = AT(u32, b + DOBJ_STATE) == DOBJ_DESTROYED ? 1u : 0u;
                 if (r->index < OBJ_MAX) hashes[r->index] = fnv(mem, 1);
                 mb.objApplied++;
-                mb.inTail = mb.inTail + 1;
-                continue;
+                return;
             }
             if (b[4] == 0x2B) {
                 // a teammate's game killed this enemy: kill ours too (quietly: no loot twice)
@@ -450,14 +490,24 @@ static void apply_in(void)
                     if (r->index < OBJ_MAX) hashes[r->index] = fnv(mem, 1);
                     mb.objApplied++;
                 }
-                mb.inTail = mb.inTail + 1;
-                continue;
+                return;
             }
             // a key someone else collected: what its pickup event does (count the chest down)
             // has to happen here too, once, when it goes from collectable to collected
             u32 st = AT(u32, b + PICKUP_STATE);
             int keyWasUp = is_key(b) && (AT(u16, b + 6) & 1) && (st & 0x40) && !(st & 0x3C);
             int pickWasUp = b[4] == 0x04 && !is_key(b) && (st & 0x40) && !(st & 0x3C);
+            if (b[4] == 0x04 && (st & 0x0C) && r->index < OBJ_MAX && !pickup_busy(b)) {
+                // we collected it too, in the same instant, and the scan hasn't reported it yet: report
+                // ours first (the server counts a sock grabbed in two games once), keep our state
+                u32 bits = save_obj(b);
+                u32 h = bits ? fnv((u32*)xs.ctxt[1], bits) : 0;
+                if (bits && h != hashes[r->index]) {
+                    hashes[r->index] = h;
+                    report(r->index, b, bits);
+                    return;
+                }
+            }
             fn_sl f = pickup_busy(b) ? 0 : resolve(loadFn, b, 0x38);
             if (f) {
                 u32* mem = scratch_begin();
@@ -481,7 +531,6 @@ static void apply_in(void)
                 else if (pickWasUp && (st & 0x0C)) objsync_relay_links(b, EVT_PICKUP);
             }
         }
-        mb.inTail = mb.inTail + 1;
     }
 }
 

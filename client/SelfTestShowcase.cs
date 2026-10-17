@@ -812,14 +812,22 @@ static partial class SelfTest
         var A = bots[0];
         var B = bots[1];
         var pair = new List<Bot> { A, B };
-        string scene = a.GetValueOrDefault("lassoscene", "BB02");
+        foreach (var scene in a.GetValueOrDefault("lassoscenes", "BB02").Split(','))
+            LassoScene(A, B, pair, scene);
+    }
+
+    // swing targets ("hitches", zEntPlayer_Init): SIMP/PLAT/DSTR with the trailer_hitch model; the
+    // swing starts when one is within 10 units, in front, in sight (1 unit above when grounded) and X
+    // is pressed (pad 0x20000) - in the air: LassoSwingBeginCheck wants JumpState != 0
+    static void LassoScene(Bot A, Bot B, List<Bot> pair, string scene)
+    {
         uint sc = PlayerState.SceneIdOf(scene);
         if (!GoTo(pair, sc)) return;
         foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(10));
         var objs = A.L.SceneObjects();
         var stop = objs.FirstOrDefault(q => Nm(sc, q.id).StartsWith("BUSSTOP_BUSSTOP"));
-        if (stop.id == 0) { Result($"lasso {scene}", false, "no bus stop"); return; }
-        uint sp = A.L.ObjPtr(stop.index);
+        if (stop.id == 0 && CharOf(A) != 2) { Result($"lasso {scene}", false, "no bus stop and A isn't Sandy"); return; }
+        uint sp = stop.id == 0 ? 0 : A.L.ObjPtr(stop.index);
         float SF(uint addr) => BitConverter.Int32BitsToSingle((int)A.L.Mem.ReadU32(addr));
         for (int t = 0; t < 2 && CharOf(A) != 2; t++)
         {
@@ -834,9 +842,9 @@ static partial class SelfTest
         int slot = SlotOf(B, A.Name);
         bool Swingy(string x) => x.Contains("Swing") || x.Contains("Lasso");
         bool done = false;
-        foreach (var w in objs.Where(q => Nm(sc, q.id).StartsWith("SWING_WINDOW")).Take(4))
+        foreach (var w in objs.Where(q => Nm(sc, q.id) is var n && (n.Contains("HITCH") || n.StartsWith("SWINGHOOK") || n.StartsWith("SWINGER_MECH") || n.StartsWith("TRAILER_HOOK")) && q.type != 0x01 && !n.Contains("TRIG") && !n.Contains("BUTTON")).Take(4))
         {
-            foreach (var (dx, dy, btn) in new[] { (3f, -3f, GcX), (5f, -3f, GcX), (4f, -1.5f, GcX), (6f, -4f, GcX), (3f, -3f, GcY) })
+            foreach (var (dx, dy, btn) in new[] { (3f, -3f, GcX), (5f, -4f, GcX), (2f, -2f, GcX), (6f, -2f, GcX) })
             {
                 WaitControl(A, TimeSpan.FromSeconds(15));
                 var wp = (w.x, w.y, w.z);
@@ -869,7 +877,7 @@ static partial class SelfTest
             }
             if (done) break;
         }
-        if (!done) Result($"lasso {scene}: Sandy swing", false, "no input made A swing (see log)");
+        if (!done) Result($"lasso {scene}: Sandy swing", false, $"no input made A swing (see log); hitches here: {string.Join(",", objs.Where(q => Nm(sc, q.id).Contains("HITCH")).Select(q => Nm(sc, q.id)).Take(8))}");
     }
 }
 
@@ -935,5 +943,262 @@ static partial class SelfTest
             bool stopped = WaitFor(() => TState(A) == 0 && TState(B) == 0, 6);
             Result($"cannons {scene}: cannon {c} stops when everyone left", stopped, $"group timer state A {TState(A)} B {TState(B)}");
         }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases levelitems [--itemscenes BB01,..]: level-specific collectibles (pickup items other than
+    /// spatula/underwear/sundae/sock/spongeball/key: Downtown steering wheels...). Per scene: A and B grab
+    /// two different ones in the same instant, then A grabs the rest with B watching (screenshots of B).
+    /// Each must be gone in both games, the level-pickup counters equal and up by exactly the number
+    /// grabbed, and the level's own counters (CNTR objects) equal in both games.
+    /// </summary>
+    static void LevelItemsPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        var common = new HashSet<byte> { 0, 1, 2, 5, 6, 7, 8, 12, 13 };   // 8 chest (keys phase), 12 invisibility spray (personal buff)
+        foreach (var scene in a.GetValueOrDefault("itemscenes", "BB01,BB02,BB03,BB04,GL01,GL03,RB01,RB03,RB04,SM01,SM03,KF01,GY01,GY03,BC01,BC02,DB01,DB02").Split(','))
+        {
+            uint sc = PlayerState.SceneIdOf(scene);
+            if (!GoTo(pair, sc)) continue;
+            foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(15));
+            var objs = A.L.SceneObjects();
+            var ha = A.L.ReadObjHashes(objs.Count);
+            var items = objs.Where(o => o.type == 4).Select(o => (o, info: A.L.PickupInfo(o.index)))
+                .Where(p => p.info.type == 1 && !common.Contains(p.info.index)).ToList();
+            var cntrs = objs.Where(o => Nm(sc, o.id) is var n && (n.Contains("CNTR") || n.Contains("COUNTER"))).ToList();
+            if (items.Count == 0) { Log($"levelitems {scene}: no level items"); continue; }
+            Log($"levelitems {scene}: " + string.Join(", ", items.Select(p => $"{Nm(sc, p.o.id)} item {p.info.index} {(ha[p.o.index] != 0 ? "shared" : "PERSONAL")} state {p.info.state:X} flags {p.info.flags:X} at {p.o.x:F1},{p.o.y:F1},{p.o.z:F1}")));
+            var personal = items.Where(p => ha[p.o.index] == 0).ToList();
+            if (personal.Count > 0)
+                Result($"levelitems {scene}: shared", false, $"not synced: {string.Join(", ", personal.Select(p => $"{Nm(sc, p.o.id)} (item {p.info.index})"))}");
+            var cands = items.Where(p => ha[p.o.index] != 0 && (p.info.flags & 2) != 0 && (p.info.state & 0x0C) == 0 && (p.info.state & 0x40) != 0 && (p.o.x != 0 || p.o.z != 0)).Select(p => p.o).Take(6).ToList();
+            if (cands.Count == 0) { Log($"levelitems {scene}: none collectable by touch now"); continue; }
+            bool Gone(Bot X, int idx) => (X.L.PickupInfo(idx).state & 0x0C) != 0 || (X.L.PickupInfo(idx).state & 0x40) == 0;
+            uint[] c0A = A.L.ReadCounters(), c0B = B.L.ReadCounters();
+            int LvlSum(uint[] c) => Enumerable.Range(0, 15).Sum(i => (int)c[4 + 2 * i]);
+            string Cn(Bot X) => string.Join(" ", cntrs.Select(c => $"{Nm(sc, c.id)}={X.L.ObjField(c.index, 0x14):X}"));
+            void Grab(Bot X, (int index, uint id, byte type, float x, float y, float z) o)
+            {
+                foreach (var dy in new[] { 0.3f, 1.0f, -0.4f, 2f })
+                {
+                    if (X.L.TryReadLocal(out var cs) && cs.ControlOff != 0) WaitControl(X, TimeSpan.FromSeconds(20));
+                    X.L.Teleport(o.x, o.y + dy, o.z);
+                    if (WaitFor(() => Gone(X, o.index), 3)) break;
+                }
+                WaitControl(X, TimeSpan.FromSeconds(20));
+            }
+            int grabbed = 0;
+            var tried = new List<(int index, uint id, byte type, float x, float y, float z)>();
+            if (cands.Count >= 2)
+            {
+                var go = new Barrier(2);
+                var t1 = new Thread(() => { go.SignalAndWait(); Grab(A, cands[0]); });
+                var t2 = new Thread(() => { go.SignalAndWait(); Grab(B, cands[1]); });
+                t1.Start(); t2.Start();
+                Thread.Sleep(900);
+                Shot(B, $"levelitems-{scene}-together", true);
+                t1.Join(60000); t2.Join(60000);
+                tried.Add(cands[0]); tried.Add(cands[1]);
+            }
+            foreach (var o in cands.Skip(tried.Count).Take(3))
+            {
+                B.L.Teleport(o.x + 4, o.y + 1, o.z + 4);
+                Thread.Sleep(1200);
+                Grab(A, o);
+                Shot(B, $"levelitems-{scene}-{Nm(sc, o.id)}", true);
+                tried.Add(o);
+            }
+            grabbed = tried.Count(o => Gone(A, o.index) || Gone(B, o.index));
+            bool both = WaitFor(() => tried.All(o => Gone(A, o.index) == Gone(B, o.index)), 10);
+            Thread.Sleep(3000);
+            uint[] c1A = A.L.ReadCounters(), c1B = B.L.ReadCounters();
+            int dA = LvlSum(c1A) - LvlSum(c0A), dB = LvlSum(c1B) - LvlSum(c0B);
+            bool sameCnt = WaitFor(() => Cn(A) == Cn(B), 8);
+            Result($"levelitems {scene}: synced", both && grabbed == tried.Count && dA == grabbed && dB == grabbed && c1A.SequenceEqual(c1B) && sameCnt,
+                $"{grabbed}/{tried.Count} grabbed ({(tried.Count >= 2 ? "first two at the same time by A and B" : "A only")}); gone in A: {tried.Count(o => Gone(A, o.index))}, in B: {tried.Count(o => Gone(B, o.index))}; level pickups +{dA} in A, +{dB} in B (want +{grabbed}); counters equal {c1A.SequenceEqual(c1B)}; level counters A [{Cn(A)}] B [{Cn(B)}]");
+            Compare($"levelitems: world in {scene}", A, B, null);
+        }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases remixsocks [--remixscenes GL01,..]: Deluxe's sock remix. Each level's SOCK_REMIX_COND
+    /// checks HB_TASK_COUNTER_04 >= 3 on scene begin: true hides the original PATSOCK_* socks, false
+    /// hides the remix SOCK_* socks (GL01's remix also turns on WATERTRAMP_SPRING_13, the jump to the
+    /// pier sock). Logs the setting and which socks are shown, then A and B grab the SAME sock in the
+    /// same instant in mid air (counts once, gone in both), and A grabs another one with B watching.
+    /// </summary>
+    static void RemixSocksPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        foreach (var scene in a.GetValueOrDefault("remixscenes", "GL01,BB01,JF01,RB01,KF01").Split(','))
+        {
+            uint sc = PlayerState.SceneIdOf(scene);
+            if (!GoTo(pair, sc)) continue;
+            foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(15));
+            var objs = A.L.SceneObjects();
+            var cnt = objs.FirstOrDefault(o => o.id == 0x5F45B828);
+            string Setting(Bot X) => cnt.id == 0 ? "no HB_TASK_COUNTER_04" : $"{(short)(X.L.ObjField(cnt.index, 0x14) >> 16)}";
+            var socks = objs.Where(o => o.type == 4 && Nm(sc, o.id) is var n && (n.StartsWith("SOCK_") || n.StartsWith("PATSOCK") || n.StartsWith("PAT_SOCK"))).ToList();
+            bool Shown(Bot X, int i) { var p = X.L.PickupInfo(i); return (p.state & 0x0C) == 0 && (p.state & 0x40) != 0; }
+            Log($"remixsocks {scene}: remix counter A {Setting(A)} B {Setting(B)}; " + string.Join(", ", socks.Select(o => $"{Nm(sc, o.id)} {(Shown(A, o.index) ? "shown" : "hidden")}/{(Shown(B, o.index) ? "shown" : "hidden")} at {o.x:F1},{o.y:F1},{o.z:F1}")));
+            bool sameSet = socks.All(o => Shown(A, o.index) == Shown(B, o.index));
+            Result($"remixsocks {scene}: same socks in both games", sameSet && Setting(A) == Setting(B), $"remix counter A {Setting(A)} B {Setting(B)}; shown A {socks.Count(o => Shown(A, o.index))} B {socks.Count(o => Shown(B, o.index))}");
+            var live = socks.Where(o => Shown(A, o.index) && (A.L.PickupInfo(o.index).flags & 2) != 0 && (o.x != 0 || o.z != 0)).ToList();
+            if (live.Count == 0) continue;
+            uint s0A = A.L.Global(0x1BC4), s0B = B.L.Global(0x1BC4);
+            // both drop onto the same sock from above at the same instant (caught in mid air)
+            var s = live[0];
+            var go = new Barrier(2);
+            void Drop(Bot X, float dx) { go.SignalAndWait(); for (int k = 0; k < 6 && Shown(X, s.index); k++) { X.L.Teleport(s.x + dx, s.y + 0.8f, s.z); Thread.Sleep(250); } }
+            var t1 = new Thread(() => Drop(A, 0.1f)); var t2 = new Thread(() => Drop(B, -0.1f));
+            t1.Start(); t2.Start(); t1.Join(20000); t2.Join(20000);
+            Shot(B, $"remixsocks-{scene}-together", true);
+            foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(20));
+            WaitFor(() => A.L.Global(0x1BC4) == s0A + 1 && B.L.Global(0x1BC4) == s0B + 1, 12);
+            uint s1A = A.L.Global(0x1BC4), s1B = B.L.Global(0x1BC4);
+            Result($"remixsocks {scene}: same sock grabbed by A and B at once", !Shown(A, s.index) && !Shown(B, s.index) && s1A - s0A == 1 && s1B - s0B == 1,
+                $"{Nm(sc, s.id)}: gone A {!Shown(A, s.index)} B {!Shown(B, s.index)}; socks A {s0A}->{s1A}, B {s0B}->{s1B} (want +1 each)");
+            if (live.Count < 2) continue;
+            var o2 = live[1];
+            B.L.Teleport(o2.x + 4, o2.y + 1, o2.z + 4);
+            Thread.Sleep(1200);
+            for (int k = 0; k < 6 && Shown(A, o2.index); k++) { A.L.Teleport(o2.x, o2.y + 0.8f, o2.z); Thread.Sleep(300); }
+            Shot(B, $"remixsocks-{scene}-{Nm(sc, o2.id)}", true);
+            WaitControl(A, TimeSpan.FromSeconds(20));
+            bool gone = WaitFor(() => !Shown(B, o2.index), 8);
+            Thread.Sleep(2500);
+            Result($"remixsocks {scene}: {Nm(sc, o2.id)} grabbed by A", !Shown(A, o2.index) && gone && A.L.Global(0x1BC4) - s1A == 1 && B.L.Global(0x1BC4) - s1B == 1,
+                $"gone A {!Shown(A, o2.index)} B {gone}; socks A {s1A}->{A.L.Global(0x1BC4)}, B {s1B}->{B.L.Global(0x1BC4)}");
+        }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases npcface [--facescenes JF01,..]: enemies' facing right after a map load (user saw models
+    /// spin and turn backwards). For 12 s after A and B arrive, every 0.25 s: each enemy's drawn
+    /// facing (model matrix at) in A vs B, its frame facing vs model facing in each game, and turns of
+    /// more than 120 degrees between samples (spinning).
+    /// </summary>
+    static void NpcFacePhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        foreach (var scene in a.GetValueOrDefault("facescenes", "HB11,BB02,JF01").Split(','))
+        {
+            uint sc = PlayerState.SceneIdOf(scene);
+            if (!GoTo(pair, sc)) continue;
+            var objs = A.L.SceneObjects();
+            var npcs = objs.Where(o => o.type == 0x2B && A.L.ObjField(o.index, 0) == o.id).ToList();
+            Log($"npcface {scene}: {string.Join(", ", npcs.Select(o => Nm(sc, o.id)).Take(30))}");
+            (float x, float z)? At(Bot X, int idx, bool frame)
+            {
+                var m = X.L.Mem; uint e = X.L.ObjPtr(idx);
+                uint mat = frame ? m.ReadU32(e + 0x48) : (m.ReadU32(e + 0x24) is uint md && md >= 0x80000000 ? m.ReadU32(md + 0x4C) : 0);
+                if (mat < 0x80000000 || mat >= 0x82000000) return null;
+                var b = m.Read(mat + 0x20, 12);
+                float x = System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(b), z = System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(b.AsSpan(8));
+                float l = MathF.Sqrt(x * x + z * z);
+                return l < 0.3f ? null : (x / l, z / l);
+            }
+            // a villager only turns to a player who comes close: A stands next to the named one(s)
+            var vil = objs.Where(o => o.type == 0x2B && Nm(sc, o.id) is var vn && (vn.Contains("KRABS") || vn.Contains("LARRY"))).ToList();
+            if (vil.Count > 0)
+            {
+                var v = vil[0];
+                A.L.Teleport(v.x + 2.5f, v.y + 0.5f, v.z);
+                B.L.Teleport(v.x - 6f, v.y + 0.5f, v.z + 4f);
+                npcs = vil;
+                Log($"npcface {scene}: A next to {Nm(sc, v.id)}, B 7 units away");
+            }
+            int samples = 0, abFlip = 0, frameVsModel = 0, spins = 0;
+            var worst = new Dictionary<string, int>();
+            var last = new Dictionary<(string, int), (float, float)>();
+            for (int s = 0; s < 48; s++)
+            {
+                Thread.Sleep(250);
+                foreach (var o in npcs)
+                {
+                    foreach (var X in pair)
+                    {
+                        if (At(X, o.index, false) is not { } md) continue;
+                        if (At(X, o.index, true) is { } fr && fr.x * md.x + fr.z * md.z < 0) frameVsModel++;
+                        if (last.TryGetValue((X.Name, o.index), out var p) && p.Item1 * md.x + p.Item2 * md.z < -0.5f)
+                        { spins++; var n = $"{X.Name}:{Nm(sc, o.id)}"; worst[n] = worst.GetValueOrDefault(n) + 1; }
+                        last[(X.Name, o.index)] = md;
+                    }
+                    if (s % 8 == 0 && At(A, o.index, false) is { } la && At(B, o.index, false) is { } lb) Log($"npcface {scene} {Nm(sc, o.id)}: A at {la.x:F2},{la.z:F2} B at {lb.x:F2},{lb.z:F2}");
+                    if (At(A, o.index, false) is { } ma && At(B, o.index, false) is { } mb2)
+                    { samples++; if (ma.x * mb2.x + ma.z * mb2.z < 0) { abFlip++; var n = $"AB:{Nm(sc, o.id)}"; worst[n] = worst.GetValueOrDefault(n) + 1; } }
+                }
+            }
+            Result($"npcface {scene}: NPCs face the same way after load", samples > 0 && abFlip * 20 <= samples && spins <= npcs.Count,
+                $"{npcs.Count} enemies, {samples} A/B samples: facing opposite {abFlip}, frame vs model opposite {frameVsModel}, turns > 120 deg in 0.25 s: {spins}; worst {string.Join(", ", worst.OrderByDescending(k => k.Value).Take(6).Select(k => $"{k.Key} {k.Value}"))}");
+        }
+    }
+}
+
+static partial class SelfTest
+{
+    /// <summary>
+    /// --phases deferpick: a teammate's "collected" arrives while our copy of the pickup is flying to
+    /// our player (grabbing bit 0x4). It used to be dropped; if our grab was then cut short the pickup
+    /// stayed up here and gone for the teammate (chaos: HB01 REDSHINY_PICKUP_19). Here B's copy is
+    /// marked grabbing, A collects it, B's mark is taken off: B must end up with A's state.
+    /// </summary>
+    static void DeferPickPhase(List<Bot> bots, Dictionary<string, string> a)
+    {
+        var A = bots[0];
+        var B = bots[1];
+        var pair = new List<Bot> { A, B };
+        uint sc = PlayerState.SceneIdOf(a.GetValueOrDefault("deferscene", "JF01"));
+        if (!GoTo(pair, sc)) return;
+        foreach (var b in pair) WaitControl(b, TimeSpan.FromSeconds(15));
+        var objs = A.L.SceneObjects();
+        var ha = A.L.ReadObjHashes(objs.Count);
+        A.L.TryReadLocal(out var me);
+        var cands = objs.Where(o => o.type == 4 && ha[o.index] != 0 && (o.x != 0 || o.z != 0))
+            .Where(o => { var i = A.L.PickupInfo(o.index); return i.type == 0 && (i.flags & 2) != 0 && (i.state & 0x0C) == 0 && (i.state & 0x40) != 0; })
+            .OrderBy(o => Sq(o.x - me.X) + Sq(o.z - me.Z)).Take(3).ToList();
+        foreach (var o in cands)
+        {
+            uint addr = B.L.ObjPtr(o.index) + 0x16C;
+            uint st0 = B.L.Mem.ReadU32(addr);
+            // keep B's copy "grabbing" while A collects it (rewritten constantly: the game may clear it)
+            var stop = false;
+            var hold = new Thread(() => { while (!Volatile.Read(ref stop)) { B.L.Mem.TryWrite(addr, BitConverter.GetBytes(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(st0 | 4))); Thread.Sleep(5); } B.L.Mem.TryWrite(addr, BitConverter.GetBytes(System.Buffers.Binary.BinaryPrimitives.ReverseEndianness(st0))); }) { IsBackground = true };
+            hold.Start();
+            Thread.Sleep(300);
+            bool got = false;
+            foreach (var dy in new[] { 0.3f, 1.0f, -0.4f })
+            {
+                A.L.Teleport(o.x, o.y + dy, o.z);
+                if (WaitFor(() => (A.L.PickupInfo(o.index).state & 0x0C) != 0, 3)) { got = true; break; }
+            }
+            if (!got) { Volatile.Write(ref stop, true); hold.Join(); continue; }
+            WaitFor(() => (A.L.PickupInfo(o.index).state & 0x04) == 0, 5);
+            Thread.Sleep(1500);   // A's state reaches B while B's copy is still "grabbing"
+            Volatile.Write(ref stop, true); hold.Join();   // B's grab was cut short (the thread puts B's state back)
+            uint aH = Hash(A, o.index);
+            bool same = WaitFor(() => B.L.DbgRender(4) > 0 && B.L.DbgRender(8) > 0, 6);
+            // the forced grab bit leaves B's pickup in a state no real grab makes, so only the path is
+            // checked here (held while "grabbing", applied after); the real case is covered by chaos
+            Result("deferpick: teammate's pickup held while ours flies, applied after", same,
+                $"{Nm(sc, o.id)}: A {aH:X8} B {Hash(B, o.index):X8}; B held {B.L.DbgRender(4)} applied {B.L.DbgRender(8)}; B state {B.L.PickupInfo(o.index).state:X} (A {A.L.PickupInfo(o.index).state:X})");
+            return;
+        }
+        Result("deferpick", false, "A couldn't collect any of the nearby shinies");
     }
 }

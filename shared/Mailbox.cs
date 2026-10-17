@@ -65,7 +65,7 @@ public sealed record ObjState(uint Scene, uint Id, ushort Index, byte Type, usho
 {
     /// <summary>Pickups: asset type &lt;&lt; 8 | index (0x0100 = spatula); 0 otherwise.</summary>
     public ushort Kind { get; init; }
-    public const ushort KindSpatula = 0x0100;
+    public const ushort KindSpatula = 0x0100, KindSock = 0x0106;
 
     /// <summary>A race's reward: reported so the server counts it, never shared with teammates.</summary>
     public bool CountOnly { get; init; }

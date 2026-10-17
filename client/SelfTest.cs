@@ -309,7 +309,7 @@ static partial class SelfTest
         }
         try
         {
-            var phases = a.GetValueOrDefault("phases", "core,pickups,keys,enemies,npcmove,bosses,teleport,cutscenes,talk,cheats,pay,tbox,abilities,loadstorm,fourmaps,pvp,chars,plats,cannons,slides").Split(',').ToHashSet();
+            var phases = a.GetValueOrDefault("phases", "core,pickups,keys,enemies,npcmove,bosses,teleport,cutscenes,talk,cheats,pay,tbox,abilities,loadstorm,fourmaps,pvp,chars,plats,cannons,slides,levelitems,remixsocks,lasso").Split(',').ToHashSet();
             var A = StartBot("A", party, port, scene, dolphin, work);
             var B = StartBot("B", party, port, scene, dolphin, work);
             bots.Add(A); bots.Add(B);

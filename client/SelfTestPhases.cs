@@ -65,6 +65,10 @@ static partial class SelfTest
         Phase("slides", () => SlidesPhase(bots, a));
         Phase("linkdump", () => LinkDumpPhase(bots, a));
         Phase("lasso", () => LassoPhase(bots, a));
+        Phase("levelitems", () => LevelItemsPhase(bots, a));
+        Phase("remixsocks", () => RemixSocksPhase(bots, a));
+        Phase("npcface", () => NpcFacePhase(bots, a));
+        Phase("deferpick", () => DeferPickPhase(bots, a));
         Phase("cannons", () => CannonsPhase(bots, a));
         Phase("loadstorm", () => LoadStormPhase(bots, a));
         Phase("racediag", () => RaceDiag(bots, a.GetValueOrDefault("raceobj", "GOLDENSPAT_PICKUP_02")));
