@@ -50,7 +50,7 @@ static partial class SelfTest
         Phase("talk", () => TalkPhase(bots));
         Phase("fourmaps", () => FourMapsPhase(bots, a.ContainsKey("sims")));
         Phase("npcmove", () => NpcMovePhase(bots, a.GetValueOrDefault("npcscenes", "JF01,BB01").Split(',')));
-        Phase("bosses", () => BossSyncPhase(bots, a.GetValueOrDefault("bossscenes", "B101,B201,JF04,GY04,BC05").Split(',')));
+        Phase("bosses", () => BossSyncPhase(bots, a.GetValueOrDefault("bossscenes", "B101,B201,JF04,GY04,BC05,B302,B304,B310").Split(',')));
         Phase("heapcmp", () => HeapCmp(bots, a.GetValueOrDefault("tpscenes", "B101,JF01").Split(',')));
         Phase("teleport", () => TeleportPhase(bots, a.GetValueOrDefault("tpscenes", "JF01,B101").Split(',')));
         Phase("cheats", () => CheatsPhase(bots));

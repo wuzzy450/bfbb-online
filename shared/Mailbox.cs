@@ -52,6 +52,9 @@ public static class Mb
     public const uint OHzCount = 0xE72C, OHzOutHead = 0xE730, OHzOutTail = 0xE734, OHzOut = 0xE738,
         OHzInHead = 0xE7B8, OHzInTail = 0xE7BC, OHzIn = 0xE7C0, OHzApplied = 0xE880;
     public const int HzRing = 16;
+    public const uint OTpFace = 0xE884, OTpYaw = 0xE888;
+    public const uint OBoomOutSeq = 0xE8C0, OBoomOut = 0xE8C4, OBoomInSeq = 0xE8D0, OBoomIn = 0xE8D4;
+    public const uint OLocalAnimId = 0xE88C, OLocalAnimTime = 0xE890, ORemoteAnim = 0xE894, OAnimForced = 0xE8BC;
     /// <summary>The patch's scratch serializer slot; never part of the world.</summary>
     public const uint ScratchTag = 0x42424F53; // 'BBOS'
     public const int LocalSize = 0x70, RemoteSize = 0x70;
@@ -95,6 +98,7 @@ public sealed record ObjState(uint Scene, uint Id, ushort Index, byte Type, usho
 public struct PlayerState
 {
     public uint Frame, SceneId, Character, Buttons, Health, Shiny, Spatula, ControlOff;
+    public uint AnimId; public float AnimTime;   // animation mirroring (not part of Local/Remote)
     public bool InGame;
     public sbyte Ax, Ay, Cx, Cy;
     public float X, Y, Z, Yaw, Vx, Vy, Vz;

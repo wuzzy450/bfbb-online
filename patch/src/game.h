@@ -111,6 +111,7 @@ void rwFrameSyncDirty(void);
 void zSceneExit(s32 beginReload);
 void* DLInsert(void* list, void* cell);
 void zEntPlayerReset(void* ent);
+void xAnimPlaySetState(void* single, void* state, f32 time);     // xAnimPlaySetState(xAnimSingle*, xAnimState*, float)
 u32 zEntPlayer_MoveInfo(void);                                   // attack flags of the current player (what NPCs read)
 int zEntPlayer_DamageNPCKnockBack(void* src, u32 damage, f32* from);
 void zSceneSwitch(void* portal, s32 forceSameScene);

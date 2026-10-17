@@ -266,6 +266,10 @@ public sealed class Session : IDisposable
                     }
                 }
                 break;
+            case "boom":
+                if (o["p"] is JsonArray bp && bp.Count == 3 && link != null && link.TryReadLocal(out var meB) && PlayerState.SceneName(meB.SceneId) == o["s"]?.GetValue<string>())
+                    link.WriteBoomIn(F(bp[0]), F(bp[1]), F(bp[2]));
+                break;
             case "hz":
                 // a teammate in our scene entered / left a cannon zone
                 if (o["id"]?.GetValue<uint>() is uint hzid && o["ev"]?.GetValue<uint>() is uint hzev && o["from"]?.GetValue<int>() is int hzfrom
@@ -338,6 +342,8 @@ public sealed class Session : IDisposable
         s.Buttons = o["b"]?.GetValue<uint>() ?? 0;
         s.Character = o["ch"]?.GetValue<uint>() ?? 0;
         s.Health = o["hp"]?.GetValue<uint>() ?? 3;
+        s.AnimId = o["an"]?.GetValue<uint>() ?? 0;
+        s.AnimTime = o["at"] is JsonNode atn ? F(atn) : 0;
         s.ControlOff = o["co"] != null ? 1u : 0u;
         if (o["a"] is JsonArray a && a.Count == 4) { s.Ax = (sbyte)(int)F(a[0]); s.Ay = (sbyte)(int)F(a[1]); s.Cx = (sbyte)(int)F(a[2]); s.Cy = (sbyte)(int)F(a[3]); }
         if (o["c"] is JsonArray c && c.Count == 9) { s.Cam = new float[9]; for (int i = 0; i < 9; i++) s.Cam[i] = F(c[i]); }
@@ -618,6 +624,8 @@ public sealed class Session : IDisposable
             st["c"] = Proto.Floats(me.Cam);
             st["ch"] = me.Character;
             st["hp"] = me.Health;
+            st["an"] = link.LocalAnimId;
+            st["at"] = Proto.Finite(MathF.Round(link.LocalAnimTime, 3));
             if (me.ControlOff != 0) st["co"] = 1;
             Send(st);
         }
@@ -625,6 +633,13 @@ public sealed class Session : IDisposable
         SyncObjects(me.SceneId);
         SyncNpcs(me.SceneId);
         SyncPlats(me.SceneId);
+        uint bs = link.BoomOutSeq;
+        if (bs != lastBoomSeq)
+        {
+            bool firstB = lastBoomSeq == uint.MaxValue;
+            lastBoomSeq = bs;
+            if (!firstB && Pvp) { var (bx, by, bz) = link.BoomOut; var bm = Proto.Msg("boom"); bm["s"] = PlayerState.SceneName(me.SceneId); bm["p"] = Proto.Floats(bx, by, bz); Send(bm); }
+        }
         foreach (var (hid, hev) in link.ReadHazardOut())
         {
             var hm = Proto.Msg("hz"); hm["s"] = PlayerState.SceneName(me.SceneId); hm["id"] = hid; hm["ev"] = hev;
@@ -955,6 +970,7 @@ public sealed class Session : IDisposable
     /// Our game's NPC poses out (only those that moved, everything once a second), the poses other
     /// games drive in. A pose not refreshed for 1.5 s is dropped (that NPC is no longer theirs).
     /// </summary>
+    uint lastBoomSeq = uint.MaxValue;
     readonly object platGate = new();
     (uint scene, byte[] raw)? platIn;
     uint lastPlatOutSeq;

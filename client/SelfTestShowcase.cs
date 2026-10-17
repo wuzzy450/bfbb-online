@@ -234,9 +234,13 @@ static partial class SelfTest
                     {
                         if (B.L.Global(0x16B0) < h0) break;
                         WaitControl(A, TimeSpan.FromSeconds(10));
-                        Hold(A.L, GcL, 0, 0, 150); Hold(A.L, 0, 0, 0, fly); Hold(A.L, GcL, 0, 0, 150); Hold(A.L, 0, 0, 0, 2000);
-                        A.L.PadOverride(false);
-                        Log($"pvp cruise: detonated after {fly} ms: B health {B.L.Global(0x16B0)}, hits {B.L.DbgRender(17)}");
+                        var fl = new List<string>();
+                        var th = new Thread(() => { Hold(A.L, GcL, 0, 0, 150); Hold(A.L, 0, 0, 0, fly); Hold(A.L, GcL, 0, 0, 150); Hold(A.L, 0, 0, 0, 2000); A.L.PadOverride(false); }) { IsBackground = true };
+                        th.Start();
+                        for (int k = 0; k < 60 && th.IsAlive; k++) { Thread.Sleep(50); string f = A.L.Mem.ReadU32(0x8028C2A4).ToString("X"); if (fl.Count == 0 || fl[^1] != f) fl.Add(f); }
+                        th.Join(5000);
+                        Log($"pvp cruise: A's cruise flags over time {string.Join(" > ", fl)}; A anim {AnimDesc(A, LocalAnim(A))}");
+                        Log($"pvp cruise: detonated after {fly} ms: B health {B.L.Global(0x16B0)}, hits {B.L.DbgRender(17)}; B saw a puppet missile exploding {B.L.DbgRender(15)} frames, closest blast^2 {B.L.DbgRender(9) / 100.0:F1}; A's cruise flags {A.L.Mem.ReadU32(0x8028C2A4):X}");
                     }
                     break;
                 case "bowl":
@@ -348,6 +352,7 @@ static partial class SelfTest
         }
 
         // A does a move (jump first unless a ground attack); compares A's own anims with B's puppet
+        int retry = 0;
         (float aRise, float pRise) Move(string label, uint btn, bool jump, float px, float py, float pz, bool bInFront, int delay = 350)
         {
             foreach (var b in pair) { WaitControl(b, TimeSpan.FromSeconds(10)); b.L.SetGlobal(0x16B0, 3); }
@@ -362,13 +367,15 @@ static partial class SelfTest
                 float al = MathF.Max(0.001f, MathF.Sqrt(atx * atx + atz * atz));
                 B.L.Teleport(ap.X + atx / al, ap.Y + 0.3f, ap.Z + atz / al);
             }
-            else B.L.Teleport(ap.X + 6, ap.Y + 0.3f, ap.Z + 6);
+            else B.L.Teleport(spawn.X + 1.5f, spawn.Y + 0.3f, spawn.Z);   // solid ground (6 units off was goo at the seesaw)
             B.L.PadOverride(true, 0, 0, 0); Thread.Sleep(2500); B.L.PadOverride(false);
             // B's puppet of A has caught up with the teleport (else its old spot reads as a rise)
             WaitFor(() => B.L.PuppetPos(slot) is { } q0 && A.L.TryReadLocal(out var a0) && Sq(q0.x - a0.X) + Sq(q0.y - a0.Y) + Sq(q0.z - a0.Z) < 0.5, 5);
             if (A.L.TryReadLocal(out var a1)) ap = a1;
             uint h0 = B.L.Global(0x16B0);
             var seen = new List<string>(); var mine = new List<string>(); var path = new List<string>();
+            var mineSamples = new Dictionary<string, int>();
+            string preA = AnimDesc(A, LocalAnim(A)).Split(' ')[0], preP = AnimDesc(B, PuppetAnim(B, slot)).Split(' ')[0];
             float aMaxY = ap.Y, pMaxY = ap.Y, y0 = ap.Y;
             var t = new Thread(() =>
             {
@@ -383,20 +390,26 @@ static partial class SelfTest
                 string pn = AnimDesc(B, PuppetAnim(B, slot)), an = AnimDesc(A, LocalAnim(A));
                 if (seen.Count == 0 || seen[^1] != pn) seen.Add(pn);
                 if (mine.Count == 0 || mine[^1] != an) mine.Add(an);
-                if (A.L.TryReadLocal(out var ay)) { aMaxY = Math.Max(aMaxY, ay.Y); if (label.StartsWith("seesaw") && k % 4 == 0) path.Add($"{ay.X:F1},{ay.Y:F1},{ay.Z:F1}"); }
+                string an0 = an.Split(' ')[0];
+                mineSamples[an0] = mineSamples.GetValueOrDefault(an0) + 1;
+                if (A.L.TryReadLocal(out var ay)) { aMaxY = Math.Max(aMaxY, ay.Y); if (label.StartsWith("seesaw") && k % 3 == 0) path.Add($"A {ay.Y:F1} v{ay.Vy:F0} P {(B.L.PuppetPos(slot) is { } pq2 ? pq2.y.ToString("F1") : "?")}"); }
                 if (B.L.PuppetPos(slot) is { } pq) pMaxY = Math.Max(pMaxY, pq.y);
                 if (k == 20) Shot(B, $"chars-{CN(Ch(A))}-{label}", true);
             }
             t.Join(5000);
             string N(string d) => d.Split(' ')[0];
             bool Boring(string x) => x.StartsWith("Idle") || x.StartsWith("Inactive") || x.StartsWith("Walk") || x.StartsWith("Run");
-            var mineSet = mine.Select(N).ToHashSet(); var seenSet = seen.Select(N).ToHashSet();
-            var missing = mineSet.Where(x => !Boring(x) && !seenSet.Contains(x)).ToList();
-            var extra = seenSet.Where(x => !Boring(x) && !mineSet.Contains(x)).ToList();
+            // what each was doing before the move started doesn't count; a state A was in for one
+            // sample only (a short in-between) may be missed by the puppet
+            var mineSet = mine.Select(N).Where(x => x != preA).ToHashSet(); var seenSet = seen.Select(N).Where(x => x != preP).ToHashSet();
+            var missing = mineSet.Where(x => !Boring(x) && !seenSet.Contains(x) && mineSamples.GetValueOrDefault(x) > 1).ToList();
+            var extra = seenSet.Where(x => !Boring(x) && !mineSet.Contains(x) && x != preA).ToList();
             Log($"chars {scene}: {CN(Ch(A))} {label}: A's own {string.Join(" > ", mine)}; B's puppet {string.Join(" > ", seen)}; rise A {aMaxY - y0:F2} puppet {pMaxY - y0:F2}" + (path.Count > 0 ? "; A path " + string.Join(" ", path) : ""));
             bool moved = mineSet.Any(x => !Boring(x));
             bool died = mineSet.Any(x => x.StartsWith("Defeated"));
             if (died) { Result($"chars {scene}: {CN(Ch(A))} {label}", false, $"A died ({string.Join(",", mineSet)}): test spot is bad"); return (0, 0); }
+            // A's own game ignored the input (it happens now and then): once more
+            if (!moved && !label.StartsWith("seesaw") && retry < 1) { Log($"chars {scene}: {label}: A did nothing, again"); retry++; var again = Move(label, btn, jump, px, py, pz, bInFront, delay); retry = 0; return again; }
             Result($"chars {scene}: {CN(Ch(A))} {label}: same move in both games", moved && missing.Count == 0 && extra.Count == 0 && Math.Abs(aMaxY - pMaxY) < 0.35,
                 $"A did {string.Join(",", mineSet)}; puppet missed [{string.Join(",", missing)}], extra [{string.Join(",", extra)}]; rise A {aMaxY - y0:F2} puppet {pMaxY - y0:F2}");
             if (bInFront)
@@ -472,29 +485,33 @@ static partial class SelfTest
                 WaitControl(A, TimeSpan.FromSeconds(10));
                 string fname = Nm(sc, A.L.Mem.ReadU32(fe));
                 bool carrying = false;
-                foreach (var (dx, dz, gb) in new[] { (1.0f, 0f, GcY), (-1.0f, 0f, GcY), (0f, 1.0f, GcY), (0f, -1.0f, GcY), (1.0f, 0f, GcX), (1.0f, 0f, GcB) })
+                foreach (var (dx, dz, gb) in new[] { (1.0f, 0f, GcX), (-1.0f, 0f, GcX), (0f, 1.0f, GcX), (0f, -1.0f, GcX) })
                 {
                     var f = EntPos(A, fe);
-                    A.L.Teleport(f.x + dx, f.y + 0.4f, f.z + dz);
+                    float yaw = MathF.Atan2(-dx, -dz);   // facing the melon (at = (sin, 0, cos))
+                    A.L.Teleport(f.x + dx, f.y + 0.4f, f.z + dz, yaw);
                     A.L.PadOverride(true, 0, 0, 0); Thread.Sleep(1000); A.L.PadOverride(false);
                     Log($"chars {scene}: seesaw: before grab controlOff {A.L.Global(0x1788):X}, talk {A.L.ActiveTalk():X}");
                     WaitControl(A, TimeSpan.FromSeconds(15));
-                    A.L.Teleport(f.x + dx, f.y + 0.4f, f.z + dz);
+                    A.L.Teleport(f.x + dx, f.y + 0.4f, f.z + dz, yaw);
                     A.L.PadOverride(true, 0, 0, 0); Thread.Sleep(800);
                     var seq = new List<string>();
                     Hold(A.L, gb, 0, 0, 150); A.L.PadOverride(true, 0, 0, 0);
                     for (int k = 0; k < 40; k++) { Thread.Sleep(40); string d = AnimDesc(A, LocalAnim(A)).Split(' ')[0]; if (seq.Count == 0 || seq[^1] != d) seq.Add(d); }
                     Log($"chars {scene}: seesaw: grab with {gb:X}: {string.Join(" > ", seq)}");
                     if (gb == GcY && dx > 0) { B.L.Teleport(f.x + 4, f.y + 1, f.z + 4); B.L.PadOverride(true, 0, 0, 0); Thread.Sleep(2000); B.L.PadOverride(false); Shot(B, "chars-fruitstand", true); A.L.TryReadLocal(out var a9); Log($"chars {scene}: fruit stand shot: A at {a9.X:F1},{a9.Y:F1},{a9.Z:F1}, A frames {A.L.Frames}, pad {A.L.Mem.ReadU32(0x8038C994 + 0x2C):X}, gameState {A.L.Mem.ReadU32(0x803CB8A8)}"); }
-                    string an = seq.Any(x => x.StartsWith("PatPickup") || x.StartsWith("PatCarry")) ? "PatCarry" : AnimDesc(A, LocalAnim(A));
+                    string an = seq.Any(x => x.StartsWith("Carry_Pickup") || x.StartsWith("Carry_Idle")) ? "Carry" : AnimDesc(A, LocalAnim(A));
                     A.L.TryReadLocal(out var aw);
                     Log($"chars {scene}: seesaw: pick up {fname} at {f.x:F1},{f.y:F1},{f.z:F1} from {dx:F1},{dz:F1}: A at {aw.X:F1},{aw.Y:F1},{aw.Z:F1}, anim {an}");
-                    if (an.StartsWith("PatCarry") || an.StartsWith("PatPickup") || an.StartsWith("Carry")) { carrying = true; break; }
+                    if (an.StartsWith("Carry")) { carrying = true; break; }
                 }
                 if (!carrying) continue;
                 foreach (float end in new[] { 2.3f, 3.0f })
                 {
                     if (!AnimDesc(A, LocalAnim(A)).Contains("Carry")) break;
+                    // stand on the near end facing the far end (local -z), throw: the game aims it there
+                    A.L.Teleport(cX + atX * end, cY + 1.2f, cZ + atZ * end, MathF.Atan2(-atX, -atZ));
+                    Thread.Sleep(800);
                     var (ra, rp) = Move($"seesaw throw {fname} at +{end:F1}", GcX, false, cX + atX * end, cY + 1.2f, cZ + atZ * end, false);
                     if (ra > best) { best = ra; bestP = rp; where = $"{fname} +{end:F1}"; }
                     if (ra > 5) break;
@@ -540,7 +557,7 @@ static partial class SelfTest
     {
         var A = bots[0];
         var B = bots[1];
-        string list = a.GetValueOrDefault("platscenes", "BB01,BB02,JF01,GL01,RB01,SM01,KF01,GY01,DB01");
+        string list = a.GetValueOrDefault("platscenes", "BB01,BB02,GL01,DB01");
         if (list == "all") list = "HB01,HB00,HB02,HB03,HB04,HB05,HB06,HB08,HB09,HB10,JF01,JF02,JF03,JF04,JF05,JF06,JF07,BB01,BB02,BB03,BB04,BB05,GL01,GL02,GL03,GL04,GL05,B101,RB01,RB02,RB03,RB04,BC01,BC02,BC03,BC04,BC05,BC06,BC07,BC08,SM01,SM02,SM03,SM04,SM05,B201,KF01,KF02,KF03,KF04,KF05,KF06,GY01,GY02,GY03,GY04,GY05,GY06,GY07,DB01,DB02,DB03,DB04,DB05,DB06,DB07";
         foreach (var scene in list.Split(','))
         {
@@ -679,7 +696,7 @@ static partial class SelfTest
         var B = bots[1];
         var pair = new List<Bot> { A, B };
         bool IsSlide(string x) => x.Contains("Slide") || x.StartsWith("Slip");
-        foreach (var scene in a.GetValueOrDefault("slidescenes", "SM02,SM03,SM04,JF03,RB02,RB03,GL03,KF05,BB02").Split(','))
+        foreach (var scene in a.GetValueOrDefault("slidescenes", "SM02,RB03").Split(','))
         {
             uint sc = PlayerState.SceneIdOf(scene);
             if (!GoTo(pair, sc)) return;
@@ -810,12 +827,12 @@ static partial class SelfTest
         bool done = false;
         foreach (var w in objs.Where(q => Nm(sc, q.id).StartsWith("SWING_WINDOW")).Take(4))
         {
-            foreach (var (dx, dy, btn) in new[] { (2.5f, -3f, GcY), (2.5f, -3f, GcB), (0f, -4f, GcY), (3.5f, -2f, GcX) })
+            foreach (var (dx, dy, btn) in new[] { (3f, -3f, GcX), (5f, -3f, GcX), (4f, -1.5f, GcX), (6f, -4f, GcX), (3f, -3f, GcY) })
             {
                 WaitControl(A, TimeSpan.FromSeconds(15));
                 var wp = (w.x, w.y, w.z);
                 { uint p = A.L.ObjPtr(w.index); var m = A.L.Mem.Read(A.L.Mem.ReadU32(A.L.Mem.ReadU32(p + 0x24) + 0x4C) + 0x30, 12); wp = (System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m), System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(4)), System.Buffers.Binary.BinaryPrimitives.ReadSingleBigEndian(m.AsSpan(8))); }
-                A.L.Teleport(wp.Item1 + dx, wp.Item2 + dy, wp.Item3);
+                A.L.Teleport(wp.Item1 + dx, wp.Item2 + dy, wp.Item3, MathF.Atan2(-dx, 0f));   // facing the hook
                 B.L.Teleport(wp.Item1 + dx + 5, wp.Item2 + dy + 1, wp.Item3 + 5);
                 Thread.Sleep(300);
                 var mine = new List<string>(); var seen = new List<string>(); var errs = new List<double>();

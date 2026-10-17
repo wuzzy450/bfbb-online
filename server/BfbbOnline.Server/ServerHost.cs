@@ -151,7 +151,8 @@ public sealed class ServerHost : IDisposable
             case "obj": Obj(p, o); break;
             case "np": NpcPoses(p, o); break;
             case "pf": NpcPoses(p, o); break;
-            case "hz": NpcPoses(p, o); break;   // hazard zone enter/leave: relayed to the scene   // moving platforms: relayed to the scene the same way
+            case "hz": NpcPoses(p, o); break;
+            case "boom": NpcPoses(p, o); break;   // a cruise missile blast (PvP)   // hazard zone enter/leave: relayed to the scene   // moving platforms: relayed to the scene the same way
             case "objsync": ObjSync(p, o); break;
             case "cs": Cutscene(p, o); break;
             case "talk": Talk(p, o); break;

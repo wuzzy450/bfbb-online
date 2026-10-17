@@ -233,6 +233,18 @@ typedef struct {
     u32 hzInTail;                // 0xE7BC patch
     u32 hzIn[HZ_RING][3];        // 0xE7C0 (trigger id, event, sender's party id)
     u32 hzApplied;               // 0xE880 diagnostics
+    u32 tpFace;                  // 0xE884 test hook: 1 = the next teleport also turns the player to tpYaw
+    f32 tpYaw;                   // 0xE888
+    // animation mirroring: our player's animation state (xAnimState::ID) and each teammate's
+    u32 localAnimId;             // 0xE88C
+    f32 localAnimTime;           // 0xE890
+    u32 remoteAnim[MAX_REMOTE][2]; // 0xE894 (state id, time as f32 bits) per puppet slot
+    u32 animForced;              // 0xE8BC diagnostics: puppet animations set to their player's
+    // cruise missile blasts (PvP): ours out, a teammate's in
+    u32 boomOutSeq;              // 0xE8C0 patch bumps when our missile explodes
+    f32 boomOut[3];              // 0xE8C4 where
+    u32 boomInSeq;               // 0xE8D0 bridge bumps
+    f32 boomIn[3];               // 0xE8D4
 } Mailbox;
 
 extern volatile Mailbox mb;
@@ -275,6 +287,10 @@ _Static_assert(BBOL_OFF(talkNpc) == 0xE728, "talkNpc");
 _Static_assert(BBOL_OFF(hzOut) == 0xE738, "hzOut");
 _Static_assert(BBOL_OFF(hzIn) == 0xE7C0, "hzIn");
 _Static_assert(BBOL_OFF(hzApplied) == 0xE880, "hzApplied");
+_Static_assert(BBOL_OFF(tpFace) == 0xE884, "tpFace");
+_Static_assert(BBOL_OFF(remoteAnim) == 0xE894, "remoteAnim");
+_Static_assert(BBOL_OFF(animForced) == 0xE8BC, "animForced");
+_Static_assert(BBOL_OFF(boomIn) == 0xE8D4, "boomIn");
 _Static_assert(BBOL_OFF(outHead) == 0x380, "outHead");
 _Static_assert(BBOL_OFF(out) == 0x3C0, "out");
 _Static_assert(BBOL_OFF(in) == 0x3C0 + OBJ_RING * 0x100, "in");

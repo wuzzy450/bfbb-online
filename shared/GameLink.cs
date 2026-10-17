@@ -100,6 +100,8 @@ public sealed class GameLink : IDisposable
         Span<byte> b = stackalloc byte[Mb.RemoteSize];
         s.WriteRemote(b, ++remoteSeq[slot], flags, color, name);
         Mem.TryWrite(mb + Mb.ORemote + (uint)(slot * Mb.RemoteSize), b);
+        W(Mb.ORemoteAnim + (uint)(slot * 8) + 4, BitConverter.SingleToUInt32Bits(s.AnimTime));
+        W(Mb.ORemoteAnim + (uint)(slot * 8), s.AnimId);
     }
 
     public void ClearRemote(int slot) => W(Mb.ORemote + (uint)(slot * Mb.RemoteSize), 0);
@@ -466,7 +468,19 @@ public sealed class GameLink : IDisposable
 
     public uint NpcOutSeq => U(Mb.ONpcOutSeq);
 
+    public uint BoomOutSeq => U(Mb.OBoomOutSeq);
+    public (float x, float y, float z) BoomOut { get { var b = Mem.Read(mb + Mb.OBoomOut, 12); return (BinaryPrimitives.ReadSingleBigEndian(b), BinaryPrimitives.ReadSingleBigEndian(b.AsSpan(4)), BinaryPrimitives.ReadSingleBigEndian(b.AsSpan(8))); } }
+    public void WriteBoomIn(float x, float y, float z)
+    {
+        var b = new byte[12];
+        BinaryPrimitives.WriteSingleBigEndian(b, x); BinaryPrimitives.WriteSingleBigEndian(b.AsSpan(4), y); BinaryPrimitives.WriteSingleBigEndian(b.AsSpan(8), z);
+        Mem.TryWrite(mb + Mb.OBoomIn, b);
+        W(Mb.OBoomInSeq, U(Mb.OBoomInSeq) + 1);
+    }
     public uint HzCount => U(Mb.OHzCount);
+    public uint LocalAnimId => U(Mb.OLocalAnimId);
+    public float LocalAnimTime => BitConverter.UInt32BitsToSingle(U(Mb.OLocalAnimTime));
+    public uint AnimForced => U(Mb.OAnimForced);
     public uint HzApplied => U(Mb.OHzApplied);
 
     /// <summary>Our player entering (5) / leaving (6) hazard zones since the last call.</summary>
@@ -537,6 +551,16 @@ public sealed class GameLink : IDisposable
         W(Mb.ONpcInScene, scene);
         W(Mb.ONpcInCount, (uint)n);
         W(Mb.ONpcInSeq, U(Mb.ONpcInSeq) + 1);
+    }
+
+    /// <summary>Teleport and turn to <paramref name="yaw"/> (radians, 0 = +Z, the game's rot.angle).</summary>
+    public void Teleport(float x, float y, float z, float yaw)
+    {
+        var b = new byte[4];
+        BinaryPrimitives.WriteSingleBigEndian(b, yaw);
+        Mem.TryWrite(mb + Mb.OTpYaw, b);
+        W(Mb.OTpFace, 1);
+        Teleport(x, y, z);
     }
 
     public void Teleport(float x, float y, float z)

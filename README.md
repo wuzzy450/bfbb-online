@@ -64,8 +64,12 @@ the next time their game loads a level.
 - **Bosses** are one fight with one shared health bar.
 - **Races and timed challenges** are per player; the reward counts once for the party.
 - **Story cutscenes** play for everyone in that level. Teammates elsewhere see them later.
-- When a teammate talks to an NPC in your level, you're asked whether to **watch along**
-  (Up = yes, Down = no).
+- When a teammate talks to an NPC in your level, a small line at the bottom of the screen asks
+  whether to **watch along** (Up = yes, Down = no). Signs and hints don't ask.
+- **Patrick and Sandy:** switch at a bus stop like normal; your teammates see the character you
+  picked, with their moves, slides and ground pounds.
+- **Cannons** fire for everyone while anyone stands in their zone. **Moving platforms** are in the
+  same place in every game.
 - **Teleport to a teammate:** double-click (or right-click) their name in the launcher's party list.
 
 ## Problems

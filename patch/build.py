@@ -48,6 +48,7 @@ GAME_SYMBOLS = {
     "ztalkbox_stop_talk": 0x80132A90,      # ztalkbox::stop_talk()
     "zEntEvent3": 0x8001F6E0,
     "xModelEval": 0x800346B0,
+    "xAnimPlaySetState": 0x80007F1C,
     "xfont_start_render": 0x800214E4,         # xfont::start_render() const
     "xfont_stop_render": 0x80021508,
     "xfont_irender": 0x8002167C,              # xfont::irender(const char*, float, float) const

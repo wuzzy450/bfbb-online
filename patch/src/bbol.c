@@ -45,6 +45,8 @@ typedef struct {
     u32 placed;     // has been snapped to the remote once
     u32 tilted;     // frames the puppet has been tipped over (a death or reset gone wrong)
     u32 dead;       // frames the puppet has played a death animation while its player has control
+    u32 animMiss;   // updates the puppet's animation has differed from its player's
+    u32 far;        // updates the puppet has been more than 1.5 units from where its player is
 } CtxInfo;
 
 static Ctx ctx[MAX_REMOTE];
@@ -193,6 +195,18 @@ static void publish_local(void)
         u8* an = ((u32)m >= 0x80000000u) ? (u8*)AT(u32, m + MI_ANIM) : 0;
         u8* sg = ((u32)an >= 0x80000000u) ? (u8*)AT(u32, an + 8) : 0;
         mb.dbgRender[18] = ((u32)sg >= 0x80000000u) ? AT(u32, sg + 4) : 0;
+        u8* st = (u8*)mb.dbgRender[18];
+        mb.localAnimId = ((u32)st >= 0x80000000u) ? AT(u32, st + 8) : 0;
+        mb.localAnimTime = ((u32)sg >= 0x80000000u) ? AT(f32, sg + 8) : 0;
+    }
+    {   // our cruise missile starting to explode (shared.flags 0x40): where, for teammates' PvP
+        static u32 wasBoom;
+        u32 boom = (AT(u32, CRUISE_SHARED) & 0x40u) != 0;
+        if (boom && !wasBoom) {
+            for (int k = 0; k < 3; k++) mb.boomOut[k] = AT(f32, CRUISE_SHARED + 0x50 + 4 * k);
+            mb.boomOutSeq = mb.boomOutSeq + 1;
+        }
+        wasBoom = boom;
     }
     L->on = AT(u32, pad + PAD_ON);
     L->ax = AT(s8, pad + PAD_ANALOG1);
@@ -357,7 +371,22 @@ static void pvp_apply(void)
         f32 c[3] = { s->pos[0], s->pos[1] + 0.5f, s->pos[2] };
         if (pvpLatch[i]) continue;
         if (s->attack && dist2(c, me) < 1.6f * 1.6f) { pvpLatch[i] = 1; mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, s->pos); return; }
+        if (s->boom) {   // diagnostics: frames a puppet's missile was exploding, closest blast (x100)
+            mb.dbgRender[15]++;
+            u32 dd = (u32)(dist2(s->boomAt, me) * 100.0f);
+            if (!mb.dbgRender[9] || dd < mb.dbgRender[9]) mb.dbgRender[9] = dd;
+        }
         if (s->boom && dist2(s->boomAt, me) < 2.0f * 2.0f) { pvpLatch[i] = 1; mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, s->boomAt); return; }
+    }
+    // a teammate's missile exploded (their game says where: the puppet's own missile here can't be
+    // trusted to fly the same way)
+    {
+        static u32 lastBoom;
+        if (mb.boomInSeq != lastBoom) {
+            lastBoom = mb.boomInSeq;
+            f32 at[3] = { mb.boomIn[0], mb.boomIn[1], mb.boomIn[2] };
+            if (dist2(at, me) < 2.5f * 2.5f) { mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, at); return; }
+        }
     }
     if (ballOwner && !ballHit && dist2(b, me) < 2.5f * 2.5f) { ballHit = 1; mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, b); }
 }
@@ -440,8 +469,12 @@ static void puppet_update(int i, void* scene, f32 dt)
         err[k] = tgt[k] - cur[k];
         d2 += err[k] * err[k];
     }
-    if (cheap || d2 > 6.0f * 6.0f) {
+    // held somewhere its player isn't (its own physics here: a ledge, a launch) for a quarter
+    // second: put it where they are (the pull alone lost to it at a seesaw fling's apex)
+    if (d2 > 1.5f * 1.5f) in->far++; else in->far = 0;
+    if (cheap || d2 > 6.0f * 6.0f || in->far > 15) {
         place(fr, mdl, tgt);
+        in->far = 0;
     } else {
         for (int k = 0; k < 3; k++) cur[k] += err[k] * 0.25f;
         place(fr, mdl, cur);
@@ -459,6 +492,33 @@ static void puppet_update(int i, void* scene, f32 dt)
             in->tilted = 0;
         }
     } else in->tilted = 0;
+
+    // animation mirroring: the puppet replays its player's buttons, but what they do can differ here
+    // (a melon Patrick carries in his game isn't in his hands in ours, so no throw, no seesaw fling).
+    // Off from the player's animation for 8 updates: set it to theirs (by state id, in this puppet's
+    // own table; xAnimPlaySetState runs no transition callbacks, so nothing is thrown here twice)
+    {
+        u32 want = mb.remoteAnim[i][0];
+        u8* play = mdl ? (u8*)AT(u32, mdl + MI_ANIM) : 0;
+        u8* sg = ((u32)play >= 0x80000000u) ? (u8*)AT(u32, play + 8) : 0;
+        u8* cur = ((u32)sg >= 0x80000000u) ? (u8*)AT(u32, sg + 4) : 0;
+        if (want && (u32)cur >= 0x80000000u && AT(u32, cur + 8) != want && !cheap) {
+            if (++in->animMiss >= 8) {
+                in->animMiss = 0;
+                u8* tbl = (u8*)AT(u32, play + 0x10);
+                u8* s = ((u32)tbl >= 0x80000000u) ? (u8*)AT(u32, tbl + 0xC) : 0;
+                for (int guard = 0; (u32)s >= 0x80000000u && guard < 400; guard++, s = (u8*)AT(u32, s)) {
+                    if (AT(u32, s + 8) != want) continue;
+                    f32 t; u32 tb = mb.remoteAnim[i][1];
+                    memcpy(&t, &tb, 4);
+                    if (!(t >= 0 && t < 100)) t = 0;
+                    xAnimPlaySetState(sg, s, t);
+                    mb.animForced = mb.animForced + 1;
+                    break;
+                }
+            }
+        } else in->animMiss = 0;
+    }
 
     // a death (goo, pit...) plays here too, but only the teammate's own game respawns them: a puppet
     // still in a death animation while its player has control again is reset (seen: stuck in
@@ -729,6 +789,7 @@ void bbol_player_update(void* ent, void* scene, f32 dt)
         mb.tpAck = mb.tpSeq;
         f32 p[3] = { mb.tpPos[0], mb.tpPos[1], mb.tpPos[2] };
         if (frame_of_live()) place(frame_of_live(), model_of_live(), p);
+        if (mb.tpFace && frame_of_live()) { face(frame_of_live(), model_of_live(), mb.tpYaw); mb.tpFace = 0; }
     }
     if (!(mb.flags & 1024u)) objsync_frame();   // 1024: diagnostics, no object sync
     arena_check(3);
