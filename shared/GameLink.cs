@@ -58,6 +58,7 @@ public sealed class GameLink : IDisposable
     }
 
     public bool Bridged => U(Mb.OBridge) == Mb.BridgeMagic;
+    public uint Flags => U(Mb.OFlags);
     public void SetFlag(uint bit, bool on) => W(Mb.OFlags, on ? U(Mb.OFlags) | bit : U(Mb.OFlags) & ~bit);
     public uint Frames => U(Mb.OFrames);
     public uint CtxReady => U(Mb.OCtxReady);
@@ -507,6 +508,13 @@ public sealed class GameLink : IDisposable
         if (frame < 0x80000000) return null;
         var b = Mem.Read(frame + 0x30, 12);
         return (BinaryPrimitives.ReadSingleBigEndian(b), BinaryPrimitives.ReadSingleBigEndian(b.AsSpan(4)), BinaryPrimitives.ReadSingleBigEndian(b.AsSpan(8)));
+    }
+
+    /// <summary>A field of puppet <paramref name="slot"/>'s saved globals (offset as in globals, &gt;= player 0x6E0).</summary>
+    public uint PuppetGlobal(int slot, uint off)
+    {
+        uint ctx = U(Mb.ODbgCtx), size = U(Mb.ODbgCtxSize);
+        return ctx == 0 ? 0 : Mem.ReadU32(ctx + (uint)slot * size + off - 0x6E0);
     }
 
     public string RemoteName(int slot)

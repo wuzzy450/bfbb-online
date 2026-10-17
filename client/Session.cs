@@ -25,6 +25,8 @@ public sealed class Peer
 /// <summary>One play session: the server connection plus the running game.</summary>
 public sealed class Session : IDisposable
 {
+    /// <summary>The server has PvP on (from its welcome).</summary>
+    public bool Pvp { get; private set; }
     readonly Config cfg;
     readonly Action<string> log;
     readonly CancellationTokenSource cts = new();
@@ -179,6 +181,8 @@ public sealed class Session : IDisposable
         {
             case "welcome":
                 myId = o["id"]!.GetValue<int>();
+                Pvp = o["pvp"]?.GetValue<bool>() ?? false;
+                if (Pvp) log("PvP is on in this server: teammates' attacks hurt");
                 log($"connected as {o["name"]}");
                 var j = Proto.Msg("join"); j["party"] = cfg.Party;
                 Send(j);
@@ -434,6 +438,7 @@ public sealed class Session : IDisposable
                 {
                     if (!link.Bridged) link.Hello(Mb.ModeClient, BootScene, loadWaitFrames: 600);
                     if (link.LoadPending && link.LoadSeq != handledLoadSeq) LoadHandshake();
+                    if (link.Bridged && ((link.Flags & Mb.FPvp) != 0) != Pvp) link.SetFlag(Mb.FPvp, Pvp);
                     if (link.TryReadLocal(out var me)) Tick(me);
                     errors = 0;
                 }

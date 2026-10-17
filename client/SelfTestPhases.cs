@@ -57,6 +57,9 @@ static partial class SelfTest
         Phase("tbox", () => TboxPhase(bots));
         Phase("pay", () => PayPhase(bots, a.GetValueOrDefault("payscene", "SM01,HB01")));
         Phase("abilities", () => AbilitiesPhase(bots, a));
+        Phase("showcase", () => ShowcasePhase(bots, a));
+        Phase("pvp", () => PvpPhase(bots, a));
+        Phase("chars", () => CharsPhase(bots, a));
         Phase("loadstorm", () => LoadStormPhase(bots, a));
         Phase("racediag", () => RaceDiag(bots, a.GetValueOrDefault("raceobj", "GOLDENSPAT_PICKUP_02")));
     }
@@ -848,7 +851,7 @@ static partial class SelfTest
         if (box == 0) { Result("conversation", false, $"none of {objs.Count(o => o.type == 0x34)} talk boxes in {SN(sc)} started a conversation"); return; }
         Log($"conversation: {Nm(sc, box)}");
         bool offered = WaitFor(() => B.L.OfferHandled && B.L.OfferResult == 0, 6);
-        Shot(B, "talk-prompt");
+        Shot(B, "talk-prompt", true);
         // B is not frozen: it can walk while A talks (the prompt never locks it)
         B.L.TryReadLocal(out var p0);
         B.L.PadOverride(true, 0, 0, 110);

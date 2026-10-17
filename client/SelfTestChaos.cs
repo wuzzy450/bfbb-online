@@ -322,7 +322,7 @@ static partial class SelfTest
             case "airspin": case "kick": Hold(L, GcA, ax, ay, 150); Hold(L, 0, ax, ay, 200); Hold(L, GcB, ax, ay, 150); Hold(L, 0, ax, ay, 600); break;
             case "bash": case "lasso": Hold(L, GcY, 0, 0, 150); Hold(L, 0, 0, 0, 700); break;
             case "bounce": case "flop": Hold(L, GcA, 0, 0, 150); Hold(L, 0, 0, 0, 300); Hold(L, GcY, 0, 0, 150); Hold(L, 0, 0, 0, 900); break;
-            case "bowl": Hold(L, GcB, 0, 0, 900); Hold(L, 0, ax, 0, 1200); break;
+            case "bowl": Hold(L, GcX, 0, 0, 150); Hold(L, 0, ax, 0, 1800); break;   // bubble bowl is X (XPAD_BUTTON_O)
             case "cruise":
                 Hold(L, GcL, 0, 0, 150); Hold(L, 0, ax, ay, 600); Hold(L, GcA, ax, ay, 900);
                 Hold(L, GcB, 0, 0, 150); Hold(L, 0, 0, 0, 800); break;   // detonate early
@@ -800,7 +800,7 @@ static partial class SelfTest
                 {
                     case "bash": Hold(L, GcY, 0, 0, 150); Hold(L, 0, 0, 0, 900); break;
                     case "bounce": Hold(L, GcA, 0, 0, 150); Hold(L, 0, 0, 0, 300); Hold(L, GcY, 0, 0, 150); Hold(L, 0, 0, 0, 1200); break;
-                    case "bowl": Hold(L, GcB, 0, 0, 900); Hold(L, 0, 0, 0, 1500); break;   // (no stick: it walked C off a ledge)
+                    case "bowl": Hold(L, GcX, 0, 0, 150); Hold(L, 0, 0, 0, 2200); break;   // X (XPAD_BUTTON_O); no stick: it walked C off a ledge
                     case "cruise": Hold(L, GcL, 0, 0, 150); Hold(L, 0, 50, 80, 700); Hold(L, GcA, 50, 80, 1200); Hold(L, 0, -60, 0, 600); Hold(L, GcL, 0, 0, 150); Hold(L, 0, 0, 0, 1500); break;
                 }
                 L.PadOverride(false);

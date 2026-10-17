@@ -23,6 +23,7 @@
 #define MBF_WARP_ANYTIME 2u
 #define MBF_NO_PUPPET_RENDER 16u      // mb.flags: draw no puppets (diagnostics)
 #define MBF_ALL_CHEAP   8u           // mb.flags: every puppet RF_CHEAP (diagnostics)
+#define MBF_PVP         0x800000u    // mb.flags: teammates' attacks hurt us (host setting)
 #define MBF_NO_NAMETAGS 0x20000u     // mb.flags: no names over teammates
 #define MBF_NO_PUPPETS  4u           // mb.flags: don't build puppet contexts (diagnostics)          // mb.flags: also warp while gameplay is paused (cutscenes); tests only
 

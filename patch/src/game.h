@@ -28,6 +28,7 @@ typedef float f32;
 #define G_PLAYER_END     0x1FB8u       // pickupTable follows
 #define G_PLAYER_SIZE    (G_PLAYER_END - G_PLAYER)
 #define G_POWERUP        0x9BDu        // player.g.PowerUp[2]: bubble bowl, cruise bubble
+#define G_BUBBLEBOWL     0x19E4u       // player.bubblebowl: the scene's one BUBBLEBOWL boulder
 #define G_ENT_MODEL      0x704u        // player.ent.model
 #define G_ENT_UPDATE     0x714u        // player.ent.update
 #define G_ENT_RENDER     0x724u        // player.ent.render
@@ -110,6 +111,8 @@ void rwFrameSyncDirty(void);
 void zSceneExit(s32 beginReload);
 void* DLInsert(void* list, void* cell);
 void zEntPlayerReset(void* ent);
+u32 zEntPlayer_MoveInfo(void);                                   // attack flags of the current player (what NPCs read)
+int zEntPlayer_DamageNPCKnockBack(void* src, u32 damage, f32* from);
 void zSceneSwitch(void* portal, s32 forceSameScene);
 void xShadowManager_Add(void* ent);
 void* XSER_get_client(u32 idtag);

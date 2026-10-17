@@ -214,6 +214,7 @@ static partial class SelfTest
         using var server = new ServerHost(new ServerOptions
         {
             Port = port,
+            Pvp = a.ContainsKey("pvp"),
             DataDir = data,
             Sims = new SimOptions { Enabled = a.ContainsKey("sims"), MaxSims = 4, DolphinPath = dolphin, GameDol = Installer.GameDol, WorkDir = Path.Combine(work, "sims") },
             Log = s => Log("[server] " + s),
@@ -222,6 +223,8 @@ static partial class SelfTest
         string party = "selftest";
         var bots = new List<Bot>();
         visible = a.TryGetValue("visible", out var vb) ? (vb == "1" ? "A" : vb) : null;
+        offscreen = a.ContainsKey("offscreen");
+        if (offscreen) visible ??= "B";
         gdbBot = a.GetValueOrDefault("gdb");
         if (a.ContainsKey("noram")) DolphinMemory.ExtraRam = false;
         dualCore = a.ContainsKey("dualcore");
@@ -239,6 +242,7 @@ static partial class SelfTest
             var ini = Path.Combine(user, "Config", "Dolphin.ini");
             File.WriteAllText(ini, File.ReadAllText(ini).Replace("GFXBackend = Null", "GFXBackend = D3D11")
                 .Replace("RenderWindowWidth = 160", "RenderWindowWidth = 640").Replace("RenderWindowHeight = 120", "RenderWindowHeight = 480"));
+            if (offscreen) Offscreen(user);
             var psi = new System.Diagnostics.ProcessStartInfo(dolphin) { UseShellExecute = false };
             foreach (var x in new[] { "-u", user, "-b", "-e", rawDol }.Concat(DolphinMemory.LaunchArgs)) psi.ArgumentList.Add(x);
             var p = System.Diagnostics.Process.Start(psi)!;
@@ -413,6 +417,21 @@ static partial class SelfTest
         return Finish(bots, a);
     }
 
+    /// <summary>--offscreen: the render window far off the desktop, XFB copies kept in emulated RAM (Shots.CaptureXfb).</summary>
+    static void Offscreen(string user)
+    {
+        var ini = Path.Combine(user, "Config", "Dolphin.ini");
+        var t = File.ReadAllText(ini);
+        t = System.Text.RegularExpressions.Regex.Replace(t, @"RenderWindow[XY]Pos = -?\d+\r?\n", "");
+        t = t.Contains("[Display]") ? t.Replace("[Display]", "[Display]\nRenderWindowXPos = -20000\nRenderWindowYPos = -20000") : t + "\n[Display]\nRenderWindowXPos = -20000\nRenderWindowYPos = -20000\n";
+        File.WriteAllText(ini, t);
+        var gfx = Path.Combine(user, "Config", "GFX.ini");
+        var g = File.Exists(gfx) ? File.ReadAllText(gfx) : "";
+        g = System.Text.RegularExpressions.Regex.Replace(g, @"XFBToTextureEnable = \w+\r?\n?", "");
+        g = g.Contains("[Hacks]") ? g.Replace("[Hacks]", "[Hacks]\nXFBToTextureEnable = False") : g + "\n[Hacks]\nXFBToTextureEnable = False\n";
+        File.WriteAllText(gfx, g);
+    }
+
     static Bot StartBot(string name, string party, int port, uint scene, string dolphin, string work)
     {
         var user = Path.Combine(work, "user-" + name);
@@ -424,6 +443,7 @@ static partial class SelfTest
             var ini = Path.Combine(user, "Config", "Dolphin.ini");
             File.WriteAllText(ini, File.ReadAllText(ini).Replace("GFXBackend = Null", "GFXBackend = D3D11")
                 .Replace("RenderWindowWidth = 160", "RenderWindowWidth = 640").Replace("RenderWindowHeight = 120", "RenderWindowHeight = 480"));
+            if (offscreen) Offscreen(user);
         }
         if (gdbBot == name)
         {
@@ -685,6 +705,7 @@ static partial class SelfTest
 
     static System.Text.RegularExpressions.Regex? probe;
     static string? visible;
+    static bool offscreen;   // --offscreen: the visible bot's window is parked off the desktop, shots come from its XFB
     static string? namesDir;
     static readonly Dictionary<uint, Dictionary<uint, string>> nameCache = new();
 
@@ -909,12 +930,17 @@ static partial class SelfTest
         Jump("no puppet contexts");
     }
 
-    static void Shot(Bot b, string name)
+    static void Shot(Bot b, string name, bool fromScreen = false)
     {
         if (visible != b.Name) return;
         var dir = Path.Combine(AppContext.BaseDirectory, "selftest", "shots");
         Directory.CreateDirectory(dir);
-        try { Shots.Capture(b.S.DolphinPid, Path.Combine(dir, name + ".png")); } catch (Exception e) { Log("screenshot failed: " + e.Message); }
+        try
+        {
+            // --offscreen: read the frame from emulated RAM, the window never shows on the desktop
+            bool ok = offscreen ? Shots.CaptureXfb(b.L.Mem, Path.Combine(dir, name + ".png")) : Shots.Capture(b.S.DolphinPid, Path.Combine(dir, name + ".png"), fromScreen);
+            if (!ok) Log("screenshot failed");
+        } catch (Exception e) { Log("screenshot failed: " + e.Message); }
     }
 
     static void CheckCollectedStay(Bot A, Bot B, uint scene)

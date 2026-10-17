@@ -28,6 +28,7 @@ public sealed class MainForm : Form
     readonly ComboBox monitor = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     readonly CheckBox watchAlong = new() { Text = "Cutscene sync: watch teammates' cutscenes and conversations with them", AutoSize = true, MaximumSize = new Size(360, 0) };
     readonly CheckBox hostUpnp = new() { Text = "Open the port on my router (UPnP, for internet play)", AutoSize = true };
+    readonly CheckBox hostPvp = new() { Text = "PvP: attacks hit and hurt other players", AutoSize = true };
     readonly CheckBox hostSims = new() { Text = "Simulate maps on this PC (server-side)", AutoSize = true };
     readonly NumericUpDown maxSims = new() { Minimum = 1, Maximum = 16, Width = 50 };
     readonly Label hostInfo = new() { AutoSize = true, MaximumSize = new Size(360, 0), ForeColor = Color.DimGray };
@@ -64,6 +65,8 @@ public sealed class MainForm : Form
         left.Controls.Add(host);
         hostUpnp.Margin = new Padding(18, 0, 0, 0);
         left.Controls.Add(hostUpnp);
+        hostPvp.Margin = new Padding(18, 0, 0, 0);
+        left.Controls.Add(hostPvp);
         var simRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(18, 0, 0, 0) };
         simRow.Controls.Add(hostSims);
         simRow.Controls.Add(new Label { Text = "max", AutoSize = true, Margin = new Padding(6, 6, 0, 0) });
@@ -112,6 +115,7 @@ public sealed class MainForm : Form
         host.Checked = cfg.Host;
         hostSims.Checked = true;
         hostUpnp.Checked = cfg.HostUpnp;
+        hostPvp.Checked = cfg.HostPvp;
         watchAlong.Checked = cfg.WatchAlong;
         // which monitor the game opens on
         monitor.Items.Add("Automatic");
@@ -173,7 +177,7 @@ public sealed class MainForm : Form
     void UpdateHostUi()
     {
         serverAddr.Enabled = !host.Checked;
-        hostSims.Enabled = maxSims.Enabled = hostUpnp.Enabled = host.Checked;
+        hostSims.Enabled = maxSims.Enabled = hostUpnp.Enabled = hostPvp.Enabled = host.Checked;
         if (!host.Checked) { hostInfo.Text = ""; return; }
         var ips = LanAddresses();
         hostInfo.Text = $"Friends on your network connect to {string.Join(" or ", ips.DefaultIfEmpty("this PC's address"))}, port {port.Value}. "
@@ -256,6 +260,7 @@ public sealed class MainForm : Form
         cfg.Host = host.Checked;
         cfg.HostSims = hostSims.Checked;
         cfg.HostUpnp = hostUpnp.Checked;
+        cfg.HostPvp = hostPvp.Checked;
         cfg.WatchAlong = watchAlong.Checked;
         cfg.HostMaxSims = (int)maxSims.Value;
         cfg.Save();
@@ -284,6 +289,7 @@ public sealed class MainForm : Form
                     server = new ServerHost(new ServerOptions
                     {
                         Port = cfg.Port,
+                        Pvp = cfg.HostPvp,
                         DataDir = Path.Combine(data, "worlds"),
                         Sims = new SimOptions
                         {
@@ -336,7 +342,7 @@ public sealed class MainForm : Form
             });
             session.Chat += (n, c, t) => Log($"<{n}> {t}");
             session.Connect(target, cfg.Port);
-            foreach (var c in new Control[] { name, serverAddr, port, party, host, hostSims, hostUpnp, maxSims }) c.Enabled = false;
+            foreach (var c in new Control[] { name, serverAddr, port, party, host, hostSims, hostUpnp, hostPvp, maxSims }) c.Enabled = false;
         }
         if (session.GameStuck) { Log("closing the crashed game..."); session.KillGame(); }
         if (!session.GameRunning) session.LaunchGame(dolphin);

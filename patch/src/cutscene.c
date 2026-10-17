@@ -94,37 +94,27 @@ void cutscene_frame(void)
 #define BTN_DOWN 0x40u
 
 static u32 lastTalk, startedTalk, promptFrames, promptFor, teammateTalk, teammateTalkFrames;
-static u8* promptBox;
+static int promptBox;   // the watch-along question is on screen (drawn by talk_prompt_text)
 
-// A talk box that neither holds the player nor pauses the game (signs, hints): the prompt's frame.
-// Its text box must have room for our question: one too narrow for a single character per line
-// made the game's text layout run off the end of its line buffer and wreck memory (JF06).
-// The smallest one with room for the whole prompt is used (falling back to the roomiest).
-static u8* neutral_box(void)
+// A conversation with someone (an NPC next to the player), not a sign or a tutorial hint: only
+// those are offered to teammates.
+static int npc_near(u8* sc, f32 r)
 {
-    u8* sc = (u8*)AT(u32, GLOBALS + G_SCENECUR);
-    if (!sc) return 0;
+    u8* fr = (u8*)AT(u32, GLOBALS + G_ENT_FRAME);
+    if ((u32)fr < 0x80000000u) return 0;
+    f32 px = AT(f32, fr + 0x30), py = AT(f32, fr + 0x34), pz = AT(f32, fr + 0x38);
     u32 n = AT(u32, sc + 0x74);
     u8** base = (u8**)AT(u32, sc + 0x78);
-    u8* best = 0, *fit = 0;
-    f32 bestArea = 0, fitArea = 0;
     for (u32 i = 0; base && i < n; i++) {
         u8* b = base[i];
-        if (!b || b[4] != BASE_TALKBOX) continue;
-        u8* a = (u8*)AT(u32, b + 0x14);
-        u8* tb = (u8*)AT(u32, b + 0x18);
-        if ((u32)a < 0x80000000u || (u32)tb < 0x80000000u || (u32)tb >= 0x81800000u) continue;
-        if (a[0x1C] || a[0x1D]) continue;
-        u8* ta = (u8*)AT(u32, tb + 0x14);   // ztextbox::asset
-        if ((u32)ta < 0x80000000u || (u32)ta >= 0x81800000u) continue;
-        f32 w = AT(f32, ta + 0x1C), h = AT(f32, ta + 0x20), cw = AT(f32, ta + 0x28), ch = AT(f32, ta + 0x2C);
-        if (!(cw > 0) || !(ch > 0) || !(w >= 16 * cw) || !(h >= 3 * ch) || !(w < 10000) || !(h < 10000)) continue;
-        if (w * h > bestArea) { bestArea = w * h; best = b; }
-        // room for the prompt (<= 48 characters) with slack for word wrap
-        f32 cols = w / cw, rows = h / ch;
-        if (cols * rows >= 72 && (!fit || w * h < fitArea)) { fitArea = w * h; fit = b; }
+        if ((u32)b < 0x80000000u || b[4] != 0x2B) continue;
+        u8* mdl = (u8*)AT(u32, b + 0x24);
+        u8* m = ((u32)mdl >= 0x80000000u && (u32)mdl < 0x82000000u) ? (u8*)AT(u32, mdl + 0x4C) : 0;
+        if ((u32)m < 0x80000000u || (u32)m >= 0x82000000u) continue;
+        f32 dx = AT(f32, m + 0x30) - px, dy = AT(f32, m + 0x34) - py, dz = AT(f32, m + 0x38) - pz;
+        if (dx * dx + dy * dy + dz * dz < r * r) return 1;
     }
-    return fit ? fit : best;
+    return 0;
 }
 
 // Starts the teammate's conversation here: the task box that talks through that talk box (its
@@ -166,24 +156,19 @@ void talk_frame(void)
     u32 id = ((u32)active >= 0x80000000u) ? AT(u32, active) : 0;
 
     if (promptBox) {
-        // the prompt is a sign's text box showing our question; the D-pad answers it
+        // the D-pad answers the question
         u32 pressed = AT(u32, MPAD + PAD_PRESSED);
         if (active || AT(u32, GLOBALS + G_CMGR)) {
-            ztextbox_deactivate(promptBox);    // something else needs the screen
             promptBox = 0;
             mb.offerResult = 2;
         } else if (pressed & BTN_UP) {
-            ztextbox_deactivate(promptBox);
             promptBox = 0;
             startedTalk = promptFor;
             watch_along(promptFor);
             mb.offerResult = 1;
         } else if ((pressed & BTN_DOWN) || --promptFrames == 0) {
-            ztextbox_deactivate(promptBox);
             promptBox = 0;
             mb.offerResult = 2;
-        } else {
-            ztextbox_activate(promptBox);      // no-op while shown
         }
         active = (u8*)AT(u32, TALK_SHARED + 8);
         id = ((u32)active >= 0x80000000u) ? AT(u32, active) : 0;
@@ -203,7 +188,7 @@ void talk_frame(void)
         // only conversations that hold the player are offered (not signs and hints); the hold may
         // come a frame after the talk box opens, so keep looking until it ends
         int holds = (AT(u32, GLOBALS + G_CONTROLOFF) & CONTROL_OWNER_TALK) != 0;
-        if (id && id != startedTalk && sc && holds) {
+        if (id && id != startedTalk && sc && holds && npc_near(sc, 6.0f)) {
             mb.talkId = id;
             mb.talkScene = AT(u32, sc);
             mb.talkSeq = mb.talkSeq + 1;
@@ -225,19 +210,18 @@ void talk_frame(void)
         id = 0;
         lastTalk = 0;
     }
-    u8* box = neutral_box();
-    u8* tb = box ? (u8*)AT(u32, box + 0x18) : 0;      // ztalkbox::dialog_box
     if (mb.mode == MODE_SIM || promptBox || active || AT(u32, GLOBALS + G_CMGR) || AT(u32, GLOBALS + G_CONTROLOFF)
-        || !tb || !zSceneFindObject(mb.offerId)) {
+        || !zSceneFindObject(mb.offerId)) {
         mb.offerResult = 3;
         return;
     }
     for (int k = 0; k < 63; k++) promptText[k] = mb.offerText[k];
     promptText[63] = 0;
-    ztextbox_set_text(tb, promptText);
-    ztextbox_activate(tb);
-    promptBox = tb;
+    promptBox = 1;
     promptFor = mb.offerId;
     promptFrames = 8 * 60;
     mb.offerResult = 0;
 }
+
+// the watch-along question while it is up (drawn small at the bottom of the screen), else 0
+const char* talk_prompt_text(void) { return promptBox ? promptText : 0; }

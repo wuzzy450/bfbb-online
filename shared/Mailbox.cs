@@ -13,6 +13,7 @@ public static class Mb
 
     public const uint ModeOffline = 0, ModeClient = 1, ModeSim = 2;
     public const uint RfCheap = 1, RfHidden = 2, RfNoInput = 4;
+    public const uint FPvp = 0x800000;   // mb.flags MBF_PVP: teammates' attacks hurt us
 
     // Mailbox
     public const uint OMagic = 0x00, OVersion = 0x04, OBridge = 0x08, OMode = 0x0C, OBootScene = 0x10,

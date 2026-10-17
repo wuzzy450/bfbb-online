@@ -20,6 +20,8 @@ public sealed class Config
     public int HostMaxSims { get; set; } = 2;
     /// <summary>Host only: open the server port on the router with UPnP (friends on the internet).</summary>
     public bool HostUpnp { get; set; } = true;
+    /// <summary>Host only: PvP, players' attacks hurt teammates. Off by default.</summary>
+    public bool HostPvp { get; set; }
     /// <summary>Watch teammates' story cutscenes with them and get "watch along?" prompts for their conversations.</summary>
     public bool WatchAlong { get; set; } = true;
     /// <summary>Screen the game window opens on (Windows device name, "" = Dolphin's choice).</summary>

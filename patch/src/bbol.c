@@ -270,6 +270,86 @@ static void face(u8* fr, u8* mdl, f32 yaw)
     }
 }
 
+// --- PvP (host setting): checked on the victim's side, each game hurts only its own player --
+#define PVP_ATTACK  0x3Cu   // zEntPlayer_MoveInfo: 4 melee, 8 bash, 0x10 bounce/slam, 0x20 spin/wand
+typedef struct { u32 attack; u32 boom; f32 pos[3]; f32 boomAt[3]; } PvpSample;
+static PvpSample pvp[MAX_REMOTE];
+static u32 pvpLatch[MAX_REMOTE];   // this puppet's current attack already hit us (one hit per swing)
+static int ballHit;                // the rolling ball already hit us
+static u32 ballThrown;    // mb.frames when a puppet threw it
+static int ballOwner;     // 1 + slot of the puppet that last threw the scene's bowling ball, 0 = not a puppet's
+static f32 ballLast[3];
+
+static u8* ball_ent(void) { return (u8*)AT(u32, GLOBALS + G_BUBBLEBOWL); }
+static int ball_pos(f32* out)
+{
+    u8* e = ball_ent();
+    if (!e) return 0;
+    u8* mdl = (u8*)AT(u32, e + 0x24);
+    u8* m = mdl ? (u8*)AT(u32, mdl + MI_MAT) : 0;
+    if (!m) return 0;
+    for (int k = 0; k < 3; k++) out[k] = AT(f32, m + 0x30 + 4 * k);
+    return (AT(u8, e + 0x18) & 1) != 0;   // visible = rolling
+}
+static f32 dist2(const f32* a, const f32* b) { f32 d = 0; for (int k = 0; k < 3; k++) d += (a[k] - b[k]) * (a[k] - b[k]); return d; }
+
+static int name_is(const char* a, const char* b) { while (*a && *a == *b) { a++; b++; } return *a == *b; }
+static int name_starts(const char* a, const char* p) { while (*p && *a == *p) { a++; p++; } return *p == 0; }
+static int pvp_attack_name(const char* n)
+{
+    return name_is(n, "Melee01") || name_starts(n, "Karate") || name_starts(n, "Chop") || name_starts(n, "Smash")
+        || name_is(n, "LassoThrow") || name_is(n, "StunLand");   // Patrick's belly flop (X in the air) landing
+}
+
+// inside puppet i's context, right after its update
+static void pvp_sample(int i, u8* fr)
+{
+    PvpSample* s = &pvp[i];
+    s->attack = zEntPlayer_MoveInfo() & PVP_ATTACK;
+    // Patrick's/Sandy's attacks aren't in MoveInfo (their UserFlags are the same as a jump's): by name
+    u8* mdl = (u8*)AT(u32, GLOBALS + G_ENT_MODEL);
+    u8* an = mdl ? (u8*)AT(u32, mdl + MI_ANIM) : 0;
+    u8* sg = an ? (u8*)AT(u32, an + 8) : 0;
+    u8* st = sg ? (u8*)AT(u32, sg + 4) : 0;
+    const char* nm = st ? (const char*)AT(u32, st + 4) : 0;
+    if (nm && AT(u32, GCURRENTPLAYER) != 0 && pvp_attack_name(nm)) s->attack |= 4;
+    for (int k = 0; k < 3; k++) s->pos[k] = AT(f32, fr + FR_POS + 4 * k);
+    s->boom = (AT(u32, CRUISE_SHARED) & 0x40u) != 0;   // cruise_bubble shared.flags: missile exploding
+    for (int k = 0; k < 3; k++) s->boomAt[k] = AT(f32, CRUISE_SHARED + 0x50 + 4 * k);   // shared.hit_loc
+    // the ball jumped to this puppet's hand: this puppet bowled it
+    f32 b[3];
+    ball_pos(b);
+    if (ball_ent() && dist2(b, ballLast) > 4.0f && dist2(b, s->pos) < 9.0f) { ballOwner = i + 1; ballThrown = mb.frames; ballHit = 0; }
+    for (int k = 0; k < 3; k++) ballLast[k] = b[k];
+}
+
+// back in our own context, after every puppet ran
+static void pvp_apply(void)
+{
+    f32 b[3];
+    int rolling = ball_pos(b);
+    // a puppet's ball: while it rolls, or just after it was thrown (hitting us kills it at once)
+    int live = ballOwner && (rolling || mb.frames - ballThrown < 20);
+    if (!live) ballOwner = 0;
+    else if (dist2(b, ballLast) > 9.0f) ballOwner = 0;   // jumped again outside a puppet's update: we bowled
+    for (int k = 0; k < 3; k++) ballLast[k] = b[k];
+    for (int i = 0; i < MAX_REMOTE; i++) if (!pvp[i].attack && !pvp[i].boom) pvpLatch[i] = 0;
+    mb.dbgRender[16] = (u32)ballOwner | ((u32)rolling << 8) | ((u32)ballHit << 9);
+    if (!(mb.flags & MBF_PVP) || inPuppet) return;
+    u8* fr = frame_of_live();
+    if (!fr || AT(u32, GLOBALS + G_CONTROLOFF)) return;
+    f32 me[3] = { AT(f32, fr + FR_POS), AT(f32, fr + FR_POS + 4) + 0.5f, AT(f32, fr + FR_POS + 8) };
+    for (int i = 0; i < MAX_REMOTE; i++) {
+        if (!info[i].valid || !mb.remote[i].active) continue;
+        PvpSample* s = &pvp[i];
+        f32 c[3] = { s->pos[0], s->pos[1] + 0.5f, s->pos[2] };
+        if (pvpLatch[i]) continue;
+        if (s->attack && dist2(c, me) < 1.6f * 1.6f) { pvpLatch[i] = 1; mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, s->pos); return; }
+        if (s->boom && dist2(s->boomAt, me) < 2.0f * 2.0f) { pvpLatch[i] = 1; mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, s->boomAt); return; }
+    }
+    if (ballOwner && !ballHit && dist2(b, me) < 2.5f * 2.5f) { ballHit = 1; mb.dbgRender[17]++; zEntPlayer_DamageNPCKnockBack((void*)(GLOBALS + G_PLAYER), 1, b); }
+}
+
 static void puppet_update(int i, void* scene, f32 dt)
 {
     volatile Remote* r = &mb.remote[i];
@@ -289,6 +369,10 @@ static void puppet_update(int i, void* scene, f32 dt)
     // unlocks are party progress, so it has what our player has
     AT(u8, GLOBALS + G_POWERUP) = tmp.player[G_POWERUP - G_PLAYER];
     AT(u8, GLOBALS + G_POWERUP + 1) = tmp.player[G_POWERUP + 1 - G_PLAYER];
+    // character: gCurrentPlayer is per context (PSTATIC_A); the game swaps model/moves on its own
+    // when it changes (as boss fights do), if this scene has that character's model
+    if (r->character < 3 && AT(u32, GLOBALS + G_MODEL_SB + 4 * r->character))
+        AT(u32, GCURRENTPLAYER) = r->character;
 
     // pad: the remote's buttons/sticks this frame; edges derived here so none are lost
     u8* pad = (u8*)MPAD;
@@ -332,6 +416,7 @@ static void puppet_update(int i, void* scene, f32 dt)
     inPuppet = 1;
     if (!cheap) up((void*)(GLOBALS + G_PLAYER), scene, dt);
     inPuppet = 0;
+    if (fr) pvp_sample(i, fr);
 
     // pull toward where the remote player is now (last sample + velocity, capped)
     f32 age = (f32)(mb.frames - in->seqFrame) * (1.0f / 60.0f);
@@ -560,6 +645,9 @@ void bbol_setup_player(void)
         zGameSetupPlayer();
         AT(u32, SPLAYERIGNORESND) = 1;
         store(&ctx[i], SW_ALL);
+        // the bowling ball is a scene object found at scene init, not by player setup: without the
+        // pointer a puppet's bowl winds up and never throws (xEntBoulder_BubbleBowl returns early)
+        AT(u32, (u32)ctx[i].player + (G_BUBBLEBOWL - G_PLAYER)) = AT(u32, (u32)tmp.player + (G_BUBBLEBOWL - G_PLAYER));
         load(&tmp, SW_CAMERA | SW_STATICS | SW_PAD);
         info[i].valid = 1;
         mb.ctxReady = i + 1;
@@ -625,6 +713,7 @@ void bbol_player_update(void* ent, void* scene, f32 dt)
         } else
             info[i].placed = 0;
     }
+    pvp_apply();
     // a puppet's update moves the render camera (RenderWare's, shared) to its own view: put it back,
     // or our own player is culled against the wrong frustum and only his shadow shows
     if (updated && !(mb.flags & 128u)) {
@@ -681,6 +770,25 @@ static void name_tag(const f32* head, volatile Remote* r)
     xfont_stop_render(&f);
 }
 
+// the watch-along question: one small line at the bottom left, not a sign's text box (those
+// covered half the screen in some levels)
+const char* talk_prompt_text(void);
+static void talk_prompt_render(void)
+{
+    const char* t = talk_prompt_text();
+    if (!t || !t[0]) return;
+    XFont f;
+    f.id = 1;
+    f.width = 0.55f * 16.0f / 640.0f;
+    f.height = 0.55f * 19.0f / 480.0f;
+    f.space = 0;
+    f.r = 255; f.g = 240; f.b = 120; f.a = 230;
+    f.cx = 0; f.cy = 0; f.cw = 1; f.ch = 1;
+    xfont_start_render(&f);
+    xfont_irender(&f, t, 0.06f, 0.86f);
+    xfont_stop_render(&f);
+}
+
 // zSceneRenderPreFX: bctrl -> globals.player.ent.render(ent)
 void bbol_player_render(void* ent)
 {
@@ -719,7 +827,16 @@ void bbol_player_render(void* ent)
         rwFrameSyncDirty();   // see bbol_player_update
         arena_check(14 + i);
     }
-    if (mb.flags & MBF_NO_NAMETAGS) return;
+    arena_check(19);
+}
+
+// Text over the finished scene (inside the camera's update, after zSceneRender): the watch-along
+// question and teammates' names. Drawn mid-scene they were hidden by scenery drawn later.
+static void draw_overlays(void)
+{
+    if (!bridged() || mb.mode == MODE_SIM || AT(u32, GLOBALS + G_CMGR)) return;
+    talk_prompt_render();
+    if (mb.flags & (MBF_NO_NAMETAGS | MBF_NO_PUPPET_RENDER)) return;
     for (int i = 0; i < MAX_REMOTE; i++) {
         if (!info[i].valid || !info[i].placed || !mb.remote[i].active || (mb.remote[i].flags & RF_HIDDEN)) continue;
         u8* fr = (u8*)AT(u32, (u32)ctx[i].player + (G_ENT_FRAME - G_PLAYER));
@@ -727,7 +844,6 @@ void bbol_player_render(void* ent)
         f32 head[3] = { AT(f32, fr + FR_POS), AT(f32, fr + FR_POS + 4) + 1.3f, AT(f32, fr + FR_POS + 8) };
         name_tag(head, &mb.remote[i]);
     }
-    arena_check(19);
 }
 
 // zSceneReset: bl zEntPlayerReset(&globals.player.ent)
@@ -929,6 +1045,7 @@ void bbol_scene_render(void)
     if (bridged() && mb.mode == MODE_SIM) return;
     arena_check(25);
     zSceneRender();
+    draw_overlays();
     arena_check(26);
 }
 
